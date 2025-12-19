@@ -181,6 +181,45 @@ def _resolve_train_data_dir(
     return get_data_dir() / "train"
 
 
+def _validate_seq_len_consistency(model_cfg: dict, data_cfg: dict) -> int:
+    """Validate and return consistent seq_len from model and data configs.
+
+    Args:
+        model_cfg: Model configuration dict
+        data_cfg: Data configuration dict
+
+    Returns:
+        The validated sequence length
+
+    Raises:
+        ValueError: If seq_len values don't match between configs
+    """
+    model_seq_len = model_cfg.get("max_seq_len")
+    data_seq_len = data_cfg.get("seq_len")
+
+    if model_seq_len is None:
+        raise ValueError(
+            "model.max_seq_len not found in configs/model.yaml\n"
+            "Please add 'max_seq_len' under the 'model' section."
+        )
+
+    if data_seq_len is None:
+        raise ValueError(
+            "data.seq_len not found in configs/data.yaml\n"
+            "Please add 'seq_len' under the 'data' section."
+        )
+
+    if model_seq_len != data_seq_len:
+        raise ValueError(
+            f"\nSequence length mismatch detected!\n"
+            f"  model.max_seq_len (configs/model.yaml): {model_seq_len}\n"
+            f"  data.seq_len (configs/data.yaml): {data_seq_len}\n\n"
+            f"These values must match. Please update one of the configs so both are equal.\n"
+        )
+
+    return int(model_seq_len)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Train EIGN language model",
@@ -217,6 +256,9 @@ def main() -> None:
     model_cfg = _load_yaml(config_dir / "model.yaml").get("model", {})
     train_cfg = _load_yaml(config_dir / "train.yaml").get("train", {})
     data_cfg = _load_yaml(config_dir / "data.yaml").get("data", {})
+
+    # Validate seq_len consistency BEFORE any processing
+    seq_len = _validate_seq_len_consistency(model_cfg, data_cfg)
 
     # Resolve training data directory (CLI > config > default)
     train_dir = _resolve_train_data_dir(
@@ -261,9 +303,13 @@ def main() -> None:
         train_cfg["grad_accum_steps"] = 1
         train_cfg["log_every_steps"] = 1
         train_cfg["checkpoint_every_steps"] = 100  # No checkpoints in smoke test
-        data_cfg["seq_len"] = 128  # Short sequences
-        model_cfg["max_seq_len"] = data_cfg["seq_len"]
-        model_cfg["n_layers"] = 2  # Small model
+
+        # Use validated seq_len for both model and data
+        model_cfg["max_seq_len"] = seq_len
+        data_cfg["seq_len"] = seq_len
+
+        # Reduce model size for smoke test
+        model_cfg["n_layers"] = 2
         model_cfg["d_model"] = 256
         model_cfg["n_heads"] = 4
         model_cfg["ffn_dim"] = 512
@@ -286,14 +332,15 @@ def main() -> None:
         file_paths = _list_txt_files(train_dir)
         print(f"Training on {len(file_paths)} files from: {train_dir}")
         print(f"Tokenizer vocab size: {tokenizer.vocab_size:,}")
+        print(f"Sequence length: {seq_len} (model.max_seq_len = data.seq_len)")
         print()
 
-        # Create dataset
+        # Create dataset with validated seq_len
         dataset_cache_dir = cache_dir / "smoke_test"
         dataset = DocumentDataset(
             file_paths,
             tokenizer,
-            seq_len=int(data_cfg["seq_len"]),
+            seq_len=seq_len,
             cache_dir=dataset_cache_dir,
             seed=int(train_cfg["seed"]),
             shuffle=True,
@@ -303,6 +350,14 @@ def main() -> None:
         model = EIGNModel(**model_cfg)
         param_count = sum(p.numel() for p in model.parameters())
         print(f"Model parameters: {param_count:,}")
+
+        # Verify seq_len consistency
+        print(f"✓ Model max_seq_len: {model.max_seq_len}")
+        print(f"✓ Dataset seq_len: {dataset.seq_len}")
+        assert model.max_seq_len == dataset.seq_len, (
+            f"CRITICAL: model.max_seq_len ({model.max_seq_len}) != "
+            f"dataset.seq_len ({dataset.seq_len})"
+        )
         print()
 
         # Config hashes
@@ -364,10 +419,10 @@ def main() -> None:
     file_paths = _list_txt_files(train_dir)
     print(f"Training files: {len(file_paths)} from: {train_dir}")
     print(f"Tokenizer vocab size: {tokenizer.vocab_size:,}")
+    print(f"Sequence length: {seq_len} (model.max_seq_len = data.seq_len)")
     print()
 
-    # Create dataset
-    seq_len = int(data_cfg["seq_len"])
+    # Create dataset with validated seq_len
     shuffle = bool(data_cfg.get("shuffle", True))
     data_seed = int(data_cfg.get("seed", train_cfg["seed"]))
 
@@ -384,6 +439,14 @@ def main() -> None:
     model = EIGNModel(**model_cfg)
     param_count = sum(p.numel() for p in model.parameters())
     print(f"Model parameters: {param_count:,}")
+
+    # Verify seq_len consistency
+    print(f"✓ Model max_seq_len: {model.max_seq_len}")
+    print(f"✓ Dataset seq_len: {dataset.seq_len}")
+    assert model.max_seq_len == dataset.seq_len, (
+        f"CRITICAL: model.max_seq_len ({model.max_seq_len}) != "
+        f"dataset.seq_len ({dataset.seq_len})"
+    )
     print()
 
     # Output directory
