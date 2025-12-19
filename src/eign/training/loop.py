@@ -5,6 +5,7 @@ import json
 import math
 import random
 import time
+import zipfile
 from contextlib import nullcontext
 from pathlib import Path
 
@@ -161,6 +162,20 @@ def _safe_close_writer(writer: object | None) -> None:
             pass
 
 
+def _create_checkpoint_zip(checkpoint_dir: Path, output_dir: Path) -> None:
+    """Create or update checkpoint ZIP for Kaggle download."""
+    zip_path = output_dir / "eign_checkpoints.zip"
+
+    # Create ZIP with all checkpoints
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
+        for checkpoint_subdir in sorted(checkpoint_dir.glob("step_*")):
+            if checkpoint_subdir.is_dir():
+                for file in checkpoint_subdir.rglob("*"):
+                    if file.is_file():
+                        arcname = file.relative_to(checkpoint_dir.parent)
+                        zipf.write(file, arcname)
+
+
 def _save_checkpoint(
     checkpoint_dir: Path,
     model: nn.Module,
@@ -170,6 +185,7 @@ def _save_checkpoint(
     step: int,
     tokens_seen: int,
     config_hashes: dict[str, str],
+    output_dir: Path | None = None,
 ) -> None:
     # FIX A: Handle tied weights (tok_embeddings.weight and lm_head.weight share memory)
     step_dir = checkpoint_dir / f"step_{step:08d}"
@@ -215,6 +231,14 @@ def _save_checkpoint(
     }
     (step_dir / "metadata.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
+    # Create/update ZIP for Kaggle
+    if output_dir is not None:
+        try:
+            _create_checkpoint_zip(checkpoint_dir, output_dir)
+            print(f"[CHECKPOINT] Saved and zipped at step={step}")
+        except Exception as e:
+            print(f"[CHECKPOINT] Warning: ZIP creation failed: {e}")
+
 
 def _load_checkpoint(
     checkpoint_dir: Path,
@@ -249,6 +273,41 @@ def _load_checkpoint(
         "step": step,
         "tokens_seen": tokens_seen,
     }
+
+
+def _log_training_metrics(
+    dataset: IterableDataset,
+    batch_size: int,
+    grad_accum_steps: int,
+    max_steps: int,
+    seq_len: int,
+) -> None:
+    """Log training token metrics for transparency."""
+    tokens_per_step = batch_size * grad_accum_steps * seq_len
+
+    # Try to get dataset length for epoch calculations
+    try:
+        dataset_len = len(dataset)
+        samples_per_epoch = dataset_len
+        tokens_per_epoch = samples_per_epoch * seq_len
+        steps_per_epoch = samples_per_epoch // (batch_size * grad_accum_steps)
+    except (TypeError, AttributeError):
+        # IterableDataset may not have __len__
+        samples_per_epoch = None
+        tokens_per_epoch = None
+        steps_per_epoch = None
+
+    total_tokens = tokens_per_step * max_steps
+
+    print("=" * 70)
+    print("TRAINING METRICS")
+    print(f"[INFO] Tokens/step: {tokens_per_step:,}")
+    if tokens_per_epoch is not None:
+        print(f"[INFO] Tokens/epoch: ~{tokens_per_epoch / 1e6:.1f}M")
+        print(f"[INFO] Steps/epoch: ~{steps_per_epoch:,}")
+    print(f"[INFO] Tokens (planned run): ~{total_tokens / 1e6:.1f}M")
+    print(f"[INFO] Max steps: {max_steps:,}")
+    print("=" * 70)
 
 
 def train(
@@ -314,10 +373,20 @@ def train(
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     log_dir.mkdir(parents=True, exist_ok=True)
 
+    # Safe optimization: Enable TF32 on Ampere GPUs
+    if device.type == "cuda":
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+
+    # Get seq_len from model for metrics calculation
+    seq_len = getattr(model, "max_seq_len", 512)
+
+    # Log training metrics
+    _log_training_metrics(dataset, batch_size, grad_accum_steps, max_steps, seq_len)
+
     model.to(device)
     model.train()
 
-    print("[DEBUG] Creating DataLoader...")
     dataloader = DataLoader(
         dataset,
         batch_size=batch_size,
@@ -326,7 +395,6 @@ def train(
         num_workers=0,
         pin_memory=device.type == "cuda",
     )
-    print("[DEBUG] DataLoader created successfully")
     if hasattr(dataset, "__len__"):
         try:
             if len(dataset) == 0:
@@ -374,16 +442,10 @@ def train(
         accum_loss = 0.0
         accum_tokens = 0
         window_start = None
-        train_start_time = time.monotonic()
-        print("[DEBUG] Entering training loop...")
-        print("[DEBUG] Creating dataloader iterator...")
         dataloader_iter = iter(dataloader)
-        print("[DEBUG] Dataloader iterator created")
         while global_step < max_steps:  # IterableDataset: terminate strictly by max_steps.
             try:
-                print(f"[DEBUG] Fetching next batch (step={global_step})...")
                 batch = next(dataloader_iter)
-                print(f"[DEBUG] Batch fetched successfully (step={global_step})")
             except StopIteration:
                 dataloader_iter = iter(dataloader)  # IterableDataset: restart iterator.
                 continue
@@ -399,21 +461,10 @@ def train(
             tokens_seen += int(input_ids.numel())
             accum_tokens += int(input_ids.numel())
 
-            if global_step == 0 and accum_steps == 0:
-                print(f"[DEBUG] Step 0: Running first forward pass...")
-                print(f"[DEBUG] Step 0: input_ids shape={input_ids.shape}, device={input_ids.device}")
-
             with autocast_ctx:
                 logits = model(input_ids)
                 loss = loss_fn(logits.view(-1, logits.size(-1)), labels.view(-1))
             loss_value = float(loss.detach().cpu())
-
-            if global_step == 0 and accum_steps == 0:
-                print(f"[DEBUG] Step 0: Forward pass completed, loss={loss_value:.4f}")
-
-            # Print loss periodically
-            if global_step == 0 or (global_step > 0 and accum_steps == grad_accum_steps - 1 and global_step % 10 == 0):
-                print(f"[DEBUG] step={global_step} loss={loss_value:.4f}")
 
             accum_loss += loss_value
             loss = loss / grad_accum_steps
@@ -435,11 +486,6 @@ def train(
                 scaler.update()
             else:
                 optimizer.step()
-
-            # Confirm optimizer step
-            if global_step == 0 or global_step % 50 == 0:
-                print(f"[DEBUG] optimizer step completed at step={global_step}")
-
             optimizer.zero_grad(set_to_none=True)
             scheduler.step()
 
@@ -451,11 +497,14 @@ def train(
             lr_value = scheduler.get_last_lr()[0]
             avg_loss = accum_loss / float(grad_accum_steps)
 
-            # Print timing metrics
-            if global_step == 1 or global_step % 10 == 0:
-                elapsed = time.monotonic() - train_start_time
-                avg_step_time = elapsed / float(global_step)
-                print(f"[DEBUG] step={global_step} avg_time_per_step={avg_step_time:.3f}s tokens/s={tokens_per_sec:.1f}")
+            # Clean production logging
+            if global_step % log_every_steps == 0:
+                print(
+                    f"[TRAIN] step={global_step}/{max_steps} "
+                    f"loss={avg_loss:.4f} "
+                    f"tokens/s={tokens_per_sec:.1f} "
+                    f"lr={lr_value:.6e}"
+                )
 
             if global_step % log_every_steps == 0:
                 _safe_log_scalar(writer, "train/loss", avg_loss, global_step)
@@ -481,6 +530,7 @@ def train(
                     global_step,
                     tokens_seen,
                     config_hashes,
+                    output_dir,
                 )
 
             accum_steps = 0
@@ -498,6 +548,7 @@ def train(
             global_step,
             tokens_seen,
             config_hashes,
+            output_dir,
         )
     finally:
         # FIX B: Ensure dataset cleanup (closes memmaps on Windows)

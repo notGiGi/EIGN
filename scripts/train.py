@@ -137,7 +137,7 @@ def _ensure_tokenizer(
         pad_id=3,
     )
 
-    print(f"✓ Tokenizer trained successfully: {trained_model}")
+    print(f"[OK] Tokenizer trained successfully: {trained_model}")
     print("=" * 70)
     print()
 
@@ -318,10 +318,11 @@ def main() -> None:
         tokenizer_path = artifacts_dir / "tokenizer" / "v0001" / "eign_spm_unigram_32k.model"
 
         # Ensure tokenizer exists (using resolved train_dir)
+        # Use smaller vocab for smoke test to work with synthetic data
         tokenizer_path = _ensure_tokenizer(
             tokenizer_path=tokenizer_path,
             training_data_dir=train_dir,
-            vocab_size=32000,
+            vocab_size=150,  # Smaller vocab for smoke test with synthetic data
         )
 
         # Load tokenizer
@@ -337,7 +338,6 @@ def main() -> None:
 
         # Create dataset with validated seq_len
         dataset_cache_dir = cache_dir / "smoke_test"
-        print("[DEBUG] Creating DocumentDataset (smoke test)...")
         dataset = DocumentDataset(
             file_paths,
             tokenizer,
@@ -346,21 +346,16 @@ def main() -> None:
             seed=int(train_cfg["seed"]),
             shuffle=True,
         )
-        print(f"[DEBUG] DocumentDataset created, length={len(dataset)}")
 
         # Create model
         model = EIGNModel(**model_cfg)
         param_count = sum(p.numel() for p in model.parameters())
-        print(f"Model parameters: {param_count:,}")
 
         # Verify seq_len consistency
-        print(f"✓ Model max_seq_len: {model.max_seq_len}")
-        print(f"✓ Dataset seq_len: {dataset.seq_len}")
         assert model.max_seq_len == dataset.seq_len, (
             f"CRITICAL: model.max_seq_len ({model.max_seq_len}) != "
             f"dataset.seq_len ({dataset.seq_len})"
         )
-        print()
 
         # Config hashes
         train_cfg["config_hashes"] = {
@@ -369,8 +364,13 @@ def main() -> None:
             "data": _hash_config(data_cfg),
         }
 
-        # Train
-        print("Starting smoke test training...")
+        # Training banner
+        print("=" * 70)
+        print("EIGN SMOKE TEST TRAINING")
+        print(f"Model params: {param_count:,}")
+        print(f"Sequence length: {seq_len}")
+        print(f"Device: {device}")
+        print(f"Max steps: {train_cfg['max_steps']}")
         print("=" * 70)
         try:
             train(
@@ -382,7 +382,7 @@ def main() -> None:
                 pad_id=tokenizer.pad_id,
             )
             print("\n" + "=" * 70)
-            print("✓ SMOKE TEST PASSED")
+            print("[OK] SMOKE TEST PASSED")
             print("=" * 70)
         finally:
             dataset.close()
@@ -428,7 +428,6 @@ def main() -> None:
     shuffle = bool(data_cfg.get("shuffle", True))
     data_seed = int(data_cfg.get("seed", train_cfg["seed"]))
 
-    print("[DEBUG] Creating DocumentDataset (full training)...")
     dataset = DocumentDataset(
         file_paths,
         tokenizer,
@@ -437,21 +436,16 @@ def main() -> None:
         seed=data_seed,
         shuffle=shuffle,
     )
-    print(f"[DEBUG] DocumentDataset created, length={len(dataset)}")
 
     # Create model
     model = EIGNModel(**model_cfg)
     param_count = sum(p.numel() for p in model.parameters())
-    print(f"Model parameters: {param_count:,}")
 
     # Verify seq_len consistency
-    print(f"✓ Model max_seq_len: {model.max_seq_len}")
-    print(f"✓ Dataset seq_len: {dataset.seq_len}")
     assert model.max_seq_len == dataset.seq_len, (
         f"CRITICAL: model.max_seq_len ({model.max_seq_len}) != "
         f"dataset.seq_len ({dataset.seq_len})"
     )
-    print()
 
     # Output directory
     output_dir = train_cfg.get("output_dir", str(runs_dir / "train"))
@@ -465,8 +459,16 @@ def main() -> None:
         "data": _hash_config(data_cfg),
     }
 
-    # Train
-    print("Starting full training...")
+    # Training banner
+    print("=" * 70)
+    print("EIGN TRAINING STARTED")
+    print(f"Model params: {param_count:,}")
+    print(f"Sequence length: {seq_len}")
+    print(f"Device: {device}")
+    print(f"Max steps: {train_cfg['max_steps']}")
+    print(f"Batch size: {train_cfg['batch_size']}")
+    print(f"Grad accum: {train_cfg['grad_accum_steps']}")
+    print(f"Output dir: {output_dir}")
     print("=" * 70)
     train(
         model,
