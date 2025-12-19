@@ -105,7 +105,7 @@ class CausalSelfAttention(nn.Module):
         q = apply_rope(q, cos, sin)
         k = apply_rope(k, cos, sin)
 
-        use_sdp = hasattr(F, "scaled_dot_product_attention")
+        use_sdp = hasattr(F, "scaled_dot_product_attention") and q.is_cuda
         if use_sdp:
             dropout_p = self.attn_dropout.p if self.training else 0.0
             attn_output = F.scaled_dot_product_attention(
@@ -202,6 +202,7 @@ class EIGNModel(nn.Module):
         self.vocab_size = vocab_size
         self.max_seq_len = max_seq_len
         self.init_std = 0.02
+        self.gradient_checkpointing = True
         self.tok_embeddings = nn.Embedding(vocab_size, d_model)
         self.blocks = nn.ModuleList(
             [
@@ -239,7 +240,10 @@ class EIGNModel(nn.Module):
         # input_ids: (batch, seq_len)
         x = self.tok_embeddings(input_ids)  # (batch, seq_len, d_model)
         for block in self.blocks:
-            x = block(x)
+            if self.training and self.gradient_checkpointing:
+                x = torch.utils.checkpoint.checkpoint(block, x, use_reentrant=False)
+            else:
+                x = block(x)
         x = self.final_norm(x)
         logits = self.lm_head(x)  # (batch, seq_len, vocab_size)
         return logits
