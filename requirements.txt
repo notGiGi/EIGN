@@ -1,0 +1,8 @@
+torch==2.6.0
+numpy==1.26.4
+sentencepiece==0.2.0
+safetensors==0.4.5
+tensorboard==2.18.0
+pyyaml==6.0.2
+psutil==6.1.0
+pynvml==11.5.3

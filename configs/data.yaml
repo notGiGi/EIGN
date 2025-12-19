@@ -1,0 +1,7 @@
+data:
+  train_dir: data/train
+  tokenizer_model: artifacts/tokenizer/v0001/eign_spm_unigram_32k.model
+  cache_dir: data/tokenized
+  seq_len: 2048
+  shuffle: true
+  seed: 123
