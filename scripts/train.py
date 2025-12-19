@@ -7,11 +7,17 @@ Usage:
     # Smoke test (mini training, 5-10 steps)
     PYTHONPATH=src python scripts/train.py --smoke-test
 
+    # Smoke test with custom data directory
+    PYTHONPATH=src python scripts/train.py --smoke-test --train-data-dir /path/to/data
+
     # Full training
     PYTHONPATH=src python scripts/train.py
 
+    # Full training with custom data directory
+    PYTHONPATH=src python scripts/train.py --train-data-dir /path/to/data
+
 Requirements:
-    - Training data must exist in data/train/*.txt
+    - Training data must exist as .txt files in specified directory
     - Tokenizer will be auto-trained on first run if missing
 """
 from __future__ import annotations
@@ -138,6 +144,43 @@ def _ensure_tokenizer(
     return trained_model
 
 
+def _resolve_train_data_dir(
+    cli_arg: str | None,
+    config_value: str | None,
+) -> Path:
+    """Resolve training data directory from CLI, config, or default.
+
+    Priority:
+        1. CLI argument (--train-data-dir)
+        2. Config value (data.train_dir)
+        3. Default (data/train)
+
+    Args:
+        cli_arg: CLI --train-data-dir argument value
+        config_value: Config data.train_dir value
+
+    Returns:
+        Resolved Path to training data directory
+    """
+    if cli_arg:
+        # CLI argument has highest priority
+        return Path(cli_arg).resolve()
+
+    if config_value:
+        # Config has second priority
+        # Handle both absolute and relative paths
+        config_path = Path(config_value)
+        if config_path.is_absolute():
+            return config_path
+        # Relative to project root or data dir
+        if (get_data_dir() / config_value).exists():
+            return get_data_dir() / config_value
+        return REPO_ROOT / config_value
+
+    # Default fallback
+    return get_data_dir() / "train"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Train EIGN language model",
@@ -157,6 +200,12 @@ def main() -> None:
         help="Device to use (cuda/cpu, default: auto-detect)",
     )
     parser.add_argument(
+        "--train-data-dir",
+        type=str,
+        default=None,
+        help="Training data directory containing .txt files (overrides config)",
+    )
+    parser.add_argument(
         "--smoke-test",
         action="store_true",
         help="Run smoke test (mini training with 5 steps)",
@@ -169,6 +218,12 @@ def main() -> None:
     train_cfg = _load_yaml(config_dir / "train.yaml").get("train", {})
     data_cfg = _load_yaml(config_dir / "data.yaml").get("data", {})
 
+    # Resolve training data directory (CLI > config > default)
+    train_dir = _resolve_train_data_dir(
+        cli_arg=args.train_data_dir,
+        config_value=data_cfg.get("train_dir"),
+    )
+
     # Resolve device
     device = _resolve_device(args.device or train_cfg.get("device"))
     print(f"Using device: {device}")
@@ -176,10 +231,10 @@ def main() -> None:
         print(f"GPU: {torch.cuda.get_device_name(0)}")
         mem_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
         print(f"GPU Memory: {mem_gb:.1f} GB")
+    print(f"Training data: {train_dir}")
     print()
 
     # Get environment-aware directories
-    data_dir = get_data_dir()
     artifacts_dir = get_artifacts_dir()
     cache_dir = get_cache_dir()
     runs_dir = get_runs_dir()
@@ -213,11 +268,10 @@ def main() -> None:
         model_cfg["n_heads"] = 4
         model_cfg["ffn_dim"] = 512
 
-        # Resolve paths
-        train_dir = data_dir / "train"
+        # Tokenizer path
         tokenizer_path = artifacts_dir / "tokenizer" / "v0001" / "eign_spm_unigram_32k.model"
 
-        # Ensure tokenizer exists
+        # Ensure tokenizer exists (using resolved train_dir)
         tokenizer_path = _ensure_tokenizer(
             tokenizer_path=tokenizer_path,
             training_data_dir=train_dir,
@@ -228,9 +282,9 @@ def main() -> None:
         tokenizer = SentencePieceTokenizer(tokenizer_path)
         model_cfg["vocab_size"] = tokenizer.vocab_size
 
-        # Get training files
+        # Get training files (using resolved train_dir)
         file_paths = _list_txt_files(train_dir)
-        print(f"Training on {len(file_paths)} files")
+        print(f"Training on {len(file_paths)} files from: {train_dir}")
         print(f"Tokenizer vocab size: {tokenizer.vocab_size:,}")
         print()
 
@@ -286,12 +340,11 @@ def main() -> None:
     print("=" * 70)
     print()
 
-    # Resolve paths from config
-    train_dir = data_dir / data_cfg.get("train_dir", "train")
+    # Tokenizer and cache paths
     tokenizer_path = artifacts_dir / "tokenizer" / "v0001" / "eign_spm_unigram_32k.model"
     dataset_cache_dir = cache_dir / data_cfg.get("cache_dir", "train")
 
-    # Ensure tokenizer exists
+    # Ensure tokenizer exists (using resolved train_dir)
     tokenizer_path = _ensure_tokenizer(
         tokenizer_path=tokenizer_path,
         training_data_dir=train_dir,
@@ -307,9 +360,9 @@ def main() -> None:
         )
     model_cfg["vocab_size"] = tokenizer.vocab_size
 
-    # Get training files
+    # Get training files (using resolved train_dir)
     file_paths = _list_txt_files(train_dir)
-    print(f"Training files: {len(file_paths)}")
+    print(f"Training files: {len(file_paths)} from: {train_dir}")
     print(f"Tokenizer vocab size: {tokenizer.vocab_size:,}")
     print()
 
