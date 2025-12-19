@@ -337,6 +337,7 @@ def main() -> None:
 
         # Create dataset with validated seq_len
         dataset_cache_dir = cache_dir / "smoke_test"
+        print("[DEBUG] Creating DocumentDataset (smoke test)...")
         dataset = DocumentDataset(
             file_paths,
             tokenizer,
@@ -345,6 +346,7 @@ def main() -> None:
             seed=int(train_cfg["seed"]),
             shuffle=True,
         )
+        print(f"[DEBUG] DocumentDataset created, length={len(dataset)}")
 
         # Create model
         model = EIGNModel(**model_cfg)
@@ -426,6 +428,7 @@ def main() -> None:
     shuffle = bool(data_cfg.get("shuffle", True))
     data_seed = int(data_cfg.get("seed", train_cfg["seed"]))
 
+    print("[DEBUG] Creating DocumentDataset (full training)...")
     dataset = DocumentDataset(
         file_paths,
         tokenizer,
@@ -434,6 +437,7 @@ def main() -> None:
         seed=data_seed,
         shuffle=shuffle,
     )
+    print(f"[DEBUG] DocumentDataset created, length={len(dataset)}")
 
     # Create model
     model = EIGNModel(**model_cfg)

@@ -112,7 +112,8 @@ class DocumentDataset(IterableDataset):
         return tokens
 
     def __iter__(self) -> Iterator[tuple[torch.Tensor, torch.Tensor]]:
-        for entry in self._index:
+        for idx, entry in enumerate(self._index):
+            print(f"[DEBUG] __iter__ index={idx}, file={Path(entry.file_path).name}, offset={entry.token_offset}")
             tokens = self._load_tokens(entry.file_path)
             start = entry.token_offset
             end = start + self.chunk_len

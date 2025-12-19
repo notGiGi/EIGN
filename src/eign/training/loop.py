@@ -317,6 +317,7 @@ def train(
     model.to(device)
     model.train()
 
+    print("[DEBUG] Creating DataLoader...")
     dataloader = DataLoader(
         dataset,
         batch_size=batch_size,
@@ -325,6 +326,7 @@ def train(
         num_workers=0,
         pin_memory=device.type == "cuda",
     )
+    print("[DEBUG] DataLoader created successfully")
     if hasattr(dataset, "__len__"):
         try:
             if len(dataset) == 0:
@@ -372,10 +374,15 @@ def train(
         accum_loss = 0.0
         accum_tokens = 0
         window_start = None
+        print("[DEBUG] Entering training loop...")
+        print("[DEBUG] Creating dataloader iterator...")
         dataloader_iter = iter(dataloader)
+        print("[DEBUG] Dataloader iterator created")
         while global_step < max_steps:  # IterableDataset: terminate strictly by max_steps.
             try:
+                print(f"[DEBUG] Fetching next batch (step={global_step})...")
                 batch = next(dataloader_iter)
+                print(f"[DEBUG] Batch fetched successfully (step={global_step})")
             except StopIteration:
                 dataloader_iter = iter(dataloader)  # IterableDataset: restart iterator.
                 continue
@@ -391,10 +398,17 @@ def train(
             tokens_seen += int(input_ids.numel())
             accum_tokens += int(input_ids.numel())
 
+            if global_step == 0 and accum_steps == 0:
+                print(f"[DEBUG] Step 0: Running first forward pass...")
+                print(f"[DEBUG] Step 0: input_ids shape={input_ids.shape}, device={input_ids.device}")
+
             with autocast_ctx:
                 logits = model(input_ids)
                 loss = loss_fn(logits.view(-1, logits.size(-1)), labels.view(-1))
             loss_value = float(loss.detach().cpu())
+
+            if global_step == 0 and accum_steps == 0:
+                print(f"[DEBUG] Step 0: Forward pass completed, loss={loss_value:.4f}")
             accum_loss += loss_value
             loss = loss / grad_accum_steps
 
