@@ -35,6 +35,15 @@ Added `[DEBUG]` prints to diagnose where training blocks without changing functi
 - Line 403: `[DEBUG] Step 0: input_ids shape={shape}, device={device}`
 - Line 411: `[DEBUG] Step 0: Forward pass completed, loss={loss}`
 
+**Loss monitoring (every 10 steps):**
+- Line 415-416: `[DEBUG] step={step} loss={loss_value}`
+
+**Optimizer step confirmation (every 50 steps):**
+- Line 440-441: `[DEBUG] optimizer step completed at step={step}`
+
+**Timing metrics (every 10 steps):**
+- Line 455-458: `[DEBUG] step={step} avg_time_per_step={time}s tokens/s={rate}`
+
 ### 3. src/eign/data/datasets.py
 
 **Iterator (every sample):**
@@ -61,7 +70,17 @@ Starting ... training...
 [DEBUG] Step 0: Running first forward pass...
 [DEBUG] Step 0: input_ids shape=torch.Size([...]), device=cuda:0
 [DEBUG] Step 0: Forward pass completed, loss=X.XXXX
+[DEBUG] step=0 loss=X.XXXX
+[DEBUG] optimizer step completed at step=0
+[DEBUG] step=1 avg_time_per_step=X.XXXs tokens/s=XXXX.X
 [DEBUG] Fetching next batch (step=1)...
+...
+[DEBUG] step=10 loss=X.XXXX
+[DEBUG] step=10 avg_time_per_step=X.XXXs tokens/s=XXXX.X
+[DEBUG] Fetching next batch (step=11)...
+...
+[DEBUG] optimizer step completed at step=50
+[DEBUG] step=50 avg_time_per_step=X.XXXs tokens/s=XXXX.X
 ...
 ```
 

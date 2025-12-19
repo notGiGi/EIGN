@@ -374,6 +374,7 @@ def train(
         accum_loss = 0.0
         accum_tokens = 0
         window_start = None
+        train_start_time = time.monotonic()
         print("[DEBUG] Entering training loop...")
         print("[DEBUG] Creating dataloader iterator...")
         dataloader_iter = iter(dataloader)
@@ -409,6 +410,11 @@ def train(
 
             if global_step == 0 and accum_steps == 0:
                 print(f"[DEBUG] Step 0: Forward pass completed, loss={loss_value:.4f}")
+
+            # Print loss periodically
+            if global_step == 0 or (global_step > 0 and accum_steps == grad_accum_steps - 1 and global_step % 10 == 0):
+                print(f"[DEBUG] step={global_step} loss={loss_value:.4f}")
+
             accum_loss += loss_value
             loss = loss / grad_accum_steps
 
@@ -429,6 +435,11 @@ def train(
                 scaler.update()
             else:
                 optimizer.step()
+
+            # Confirm optimizer step
+            if global_step == 0 or global_step % 50 == 0:
+                print(f"[DEBUG] optimizer step completed at step={global_step}")
+
             optimizer.zero_grad(set_to_none=True)
             scheduler.step()
 
@@ -439,6 +450,12 @@ def train(
             tokens_per_sec = accum_tokens / max(window_time, 1e-8)
             lr_value = scheduler.get_last_lr()[0]
             avg_loss = accum_loss / float(grad_accum_steps)
+
+            # Print timing metrics
+            if global_step == 1 or global_step % 10 == 0:
+                elapsed = time.monotonic() - train_start_time
+                avg_step_time = elapsed / float(global_step)
+                print(f"[DEBUG] step={global_step} avg_time_per_step={avg_step_time:.3f}s tokens/s={tokens_per_sec:.1f}")
 
             if global_step % log_every_steps == 0:
                 _safe_log_scalar(writer, "train/loss", avg_loss, global_step)
