@@ -124,25 +124,41 @@ class _GpuMonitor:
             self._pynvml.nvmlShutdown()
 
 
-class _NullSummaryWriter:
-    def add_scalar(self, *_args: object, **_kwargs: object) -> None:
-        return None
-
-    def flush(self) -> None:
-        return None
-
-    def close(self) -> None:
-        return None
-
-
-def _get_summary_writer(log_dir: Path) -> tuple[object, str | None]:
-    # FIX D: Use torch.utils.tensorboard (requires 'tensorboard' package)
+def _get_tensorboard_writer(log_dir: Path) -> object | None:
+    """Attempt to create TensorBoard SummaryWriter. Returns None on failure."""
     try:
         from torch.utils.tensorboard import SummaryWriter
-        return SummaryWriter(log_dir=str(log_dir)), None
-    except Exception:
-        # Silently disable if tensorboard is not installed (optional dependency)
-        return _NullSummaryWriter(), None
+        return SummaryWriter(log_dir=str(log_dir))
+    except Exception as e:
+        print(f"TensorBoard disabled: {e}")
+        return None
+
+
+def _safe_log_scalar(writer: object | None, tag: str, value: float, step: int) -> None:
+    """Log scalar to TensorBoard if writer is available."""
+    if writer is not None:
+        try:
+            writer.add_scalar(tag, value, step)
+        except Exception:
+            pass
+
+
+def _safe_flush_writer(writer: object | None) -> None:
+    """Flush TensorBoard writer if available."""
+    if writer is not None:
+        try:
+            writer.flush()
+        except Exception:
+            pass
+
+
+def _safe_close_writer(writer: object | None) -> None:
+    """Close TensorBoard writer if available."""
+    if writer is not None:
+        try:
+            writer.close()
+        except Exception:
+            pass
 
 
 def _save_checkpoint(
@@ -330,9 +346,8 @@ def train(
         else nullcontext()
     )
 
-    writer, tb_warning = _get_summary_writer(log_dir)
-    if tb_warning:
-        print(tb_warning)
+    # TensorBoard writer is optional and may be None
+    writer = _get_tensorboard_writer(log_dir)
     gpu_monitor = _GpuMonitor()
 
     global_step = 0
@@ -412,18 +427,18 @@ def train(
             avg_loss = accum_loss / float(grad_accum_steps)
 
             if global_step % log_every_steps == 0:
-                writer.add_scalar("train/loss", avg_loss, global_step)
-                writer.add_scalar("train/lr", lr_value, global_step)
-                writer.add_scalar("train/grad_norm", float(grad_norm), global_step)
-                writer.add_scalar("train/tokens_per_sec", tokens_per_sec, global_step)
+                _safe_log_scalar(writer, "train/loss", avg_loss, global_step)
+                _safe_log_scalar(writer, "train/lr", lr_value, global_step)
+                _safe_log_scalar(writer, "train/grad_norm", float(grad_norm), global_step)
+                _safe_log_scalar(writer, "train/tokens_per_sec", tokens_per_sec, global_step)
                 cpu_mem = _cpu_ram_gb()
                 if cpu_mem is not None:
-                    writer.add_scalar("system/cpu_ram_used_gb", cpu_mem[0], global_step)
-                    writer.add_scalar("system/cpu_ram_total_gb", cpu_mem[1], global_step)
+                    _safe_log_scalar(writer, "system/cpu_ram_used_gb", cpu_mem[0], global_step)
+                    _safe_log_scalar(writer, "system/cpu_ram_total_gb", cpu_mem[1], global_step)
                 gpu_mem = gpu_monitor.memory_gb()
                 if gpu_mem is not None:
-                    writer.add_scalar("system/gpu_mem_used_gb", gpu_mem[0], global_step)
-                    writer.add_scalar("system/gpu_mem_total_gb", gpu_mem[1], global_step)
+                    _safe_log_scalar(writer, "system/gpu_mem_used_gb", gpu_mem[0], global_step)
+                    _safe_log_scalar(writer, "system/gpu_mem_total_gb", gpu_mem[1], global_step)
 
             if global_step % checkpoint_every_steps == 0:
                 _save_checkpoint(
@@ -458,5 +473,5 @@ def train(
         if hasattr(dataset, "close"):
             dataset.close()
         gpu_monitor.shutdown()
-        writer.flush()
-        writer.close()
+        _safe_flush_writer(writer)
+        _safe_close_writer(writer)
