@@ -1,4 +1,19 @@
 #!/usr/bin/env python
+"""EIGN Training Script - Production Ready
+
+This script trains the EIGN language model with automatic tokenizer bootstrap.
+
+Usage:
+    # Smoke test (mini training, 5-10 steps)
+    PYTHONPATH=src python scripts/train.py --smoke-test
+
+    # Full training
+    PYTHONPATH=src python scripts/train.py
+
+Requirements:
+    - Training data must exist in data/train/*.txt
+    - Tokenizer will be auto-trained on first run if missing
+"""
 from __future__ import annotations
 
 import argparse
@@ -10,32 +25,22 @@ from pathlib import Path
 import torch
 import yaml
 
+# Setup path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from eign.data import DocumentDataset, SentencePieceTokenizer, generate_synthetic_corpus
-from eign.env import get_cache_dir, get_data_dir, get_runs_dir
+from eign.data import DocumentDataset, SentencePieceTokenizer, train_tokenizer
+from eign.env import get_artifacts_dir, get_cache_dir, get_data_dir, get_runs_dir
 from eign.model import EIGNModel
 from eign.training.loop import train
 
 
-class SyntheticTokenizer:
-    def __init__(self, vocab: list[str], pad_id: int = 3) -> None:
-        self.pad_id = pad_id
-        self._vocab = {token: i + pad_id + 1 for i, token in enumerate(vocab)}
-        self._vocab_size = max(self._vocab.values()) + 1
-
-    def encode(self, text: str) -> list[int]:
-        return [self._vocab[tok] for tok in text.strip().split() if tok]
-
-    @property
-    def vocab_size(self) -> int:
-        return self._vocab_size
-
-
 def _load_yaml(path: Path) -> dict:
+    """Load YAML configuration file."""
+    if not path.exists():
+        return {}
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
     if data is None:
         return {}
@@ -45,93 +50,217 @@ def _load_yaml(path: Path) -> dict:
 
 
 def _hash_config(config: dict) -> str:
+    """Generate deterministic hash of configuration."""
     payload = json.dumps(config, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _resolve_device(requested: str | None) -> torch.device:
+    """Resolve compute device (CUDA/CPU)."""
     if requested:
         device = torch.device(requested)
         if device.type == "cuda" and not torch.cuda.is_available():
+            print(f"Warning: CUDA requested but not available, using CPU")
             return torch.device("cpu")
         return device
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 def _list_txt_files(root: Path) -> list[Path]:
+    """List all .txt files in directory recursively."""
+    if not root.exists():
+        raise FileNotFoundError(
+            f"\nTraining data directory not found: {root}\n\n"
+            f"Please create this directory and add your training data (.txt files).\n"
+            f"Example structure:\n"
+            f"  {root}/\n"
+            f"    document1.txt\n"
+            f"    document2.txt\n"
+            f"    ...\n"
+        )
+
     files = sorted(p for p in root.rglob("*.txt") if p.is_file())
     if not files:
-        raise ValueError(f"No .txt files found under {root}")
+        raise ValueError(
+            f"\nNo .txt files found in: {root}\n\n"
+            f"Please add training data (.txt files) to this directory.\n"
+        )
     return files
 
 
+def _ensure_tokenizer(
+    tokenizer_path: Path,
+    training_data_dir: Path,
+    vocab_size: int = 32000,
+) -> Path:
+    """Ensure tokenizer exists, training it if necessary.
+
+    Args:
+        tokenizer_path: Expected path to tokenizer .model file
+        training_data_dir: Directory containing training .txt files
+        vocab_size: Tokenizer vocabulary size
+
+    Returns:
+        Path to tokenizer .model file
+    """
+    if tokenizer_path.exists():
+        return tokenizer_path
+
+    print("\n" + "=" * 70)
+    print("TOKENIZER NOT FOUND - TRAINING NEW TOKENIZER")
+    print("=" * 70)
+    print(f"Expected path: {tokenizer_path}")
+    print(f"Training from: {training_data_dir}")
+    print(f"Vocabulary size: {vocab_size:,}")
+    print()
+
+    # Get training files
+    training_files = _list_txt_files(training_data_dir)
+    print(f"Found {len(training_files)} training files")
+
+    # Train tokenizer
+    model_prefix = str(tokenizer_path.with_suffix(""))
+    print(f"Training tokenizer... (this may take a few minutes)")
+
+    trained_model = train_tokenizer(
+        input_files=training_files,
+        model_prefix=model_prefix,
+        vocab_size=vocab_size,
+        model_type="unigram",
+        character_coverage=0.9995,
+        pad_id=3,
+    )
+
+    print(f"✓ Tokenizer trained successfully: {trained_model}")
+    print("=" * 70)
+    print()
+
+    return trained_model
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config-dir", type=str, default="configs")
-    parser.add_argument("--device", type=str, default=None)
-    parser.add_argument("--smoke-test", action="store_true")
+    parser = argparse.ArgumentParser(
+        description="Train EIGN language model",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__,
+    )
+    parser.add_argument(
+        "--config-dir",
+        type=str,
+        default="configs",
+        help="Directory containing config YAML files",
+    )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default=None,
+        help="Device to use (cuda/cpu, default: auto-detect)",
+    )
+    parser.add_argument(
+        "--smoke-test",
+        action="store_true",
+        help="Run smoke test (mini training with 5 steps)",
+    )
     args = parser.parse_args()
 
-    config_dir = Path(args.config_dir)
+    # Load configurations
+    config_dir = REPO_ROOT / args.config_dir
     model_cfg = _load_yaml(config_dir / "model.yaml").get("model", {})
     train_cfg = _load_yaml(config_dir / "train.yaml").get("train", {})
     data_cfg = _load_yaml(config_dir / "data.yaml").get("data", {})
 
+    # Resolve device
     device = _resolve_device(args.device or train_cfg.get("device"))
+    print(f"Using device: {device}")
+    if device.type == "cuda":
+        print(f"GPU: {torch.cuda.get_device_name(0)}")
+        mem_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+        print(f"GPU Memory: {mem_gb:.1f} GB")
+    print()
 
+    # Get environment-aware directories
+    data_dir = get_data_dir()
+    artifacts_dir = get_artifacts_dir()
+    cache_dir = get_cache_dir()
+    runs_dir = get_runs_dir()
+
+    # ========================================================================
+    # SMOKE TEST MODE
+    # ========================================================================
     if args.smoke_test:
-        # Smoke test: use environment-aware paths
+        print("=" * 70)
+        print("SMOKE TEST MODE")
+        print("=" * 70)
+        print("Running mini training (5 steps) to validate pipeline")
+        print()
+
+        # Override configs for smoke test
         train_cfg = dict(train_cfg)
         data_cfg = dict(data_cfg)
         model_cfg = dict(model_cfg)
 
-        # Environment-aware output directory
-        runs_dir = get_runs_dir()
+        # Smoke test parameters (small but real)
         train_cfg["output_dir"] = str(runs_dir / "smoke_test")
-
-        # Reduced config for smoke test (4GB VRAM compatibility)
         train_cfg["max_steps"] = 5
-        train_cfg["num_epochs"] = 1
         train_cfg["batch_size"] = 2
         train_cfg["grad_accum_steps"] = 1
         train_cfg["log_every_steps"] = 1
-        train_cfg["checkpoint_every_steps"] = 100  # No checkpoints during smoke test
-        data_cfg["seq_len"] = 16
+        train_cfg["checkpoint_every_steps"] = 100  # No checkpoints in smoke test
+        data_cfg["seq_len"] = 128  # Short sequences
         model_cfg["max_seq_len"] = data_cfg["seq_len"]
-        model_cfg["n_layers"] = 1
-        model_cfg["d_model"] = 64
-        model_cfg["n_heads"] = 2
-        model_cfg["ffn_dim"] = 128
+        model_cfg["n_layers"] = 2  # Small model
+        model_cfg["d_model"] = 256
+        model_cfg["n_heads"] = 4
+        model_cfg["ffn_dim"] = 512
 
-        # Environment-aware cache and data directories
-        cache_dir = get_cache_dir() / "smoke_test_cache"
-        doc_dir = runs_dir / "smoke_test_data" / "docs"
+        # Resolve paths
+        train_dir = data_dir / "train"
+        tokenizer_path = artifacts_dir / "tokenizer" / "v0001" / "eign_spm_unigram_32k.model"
 
-        seq_len = int(data_cfg["seq_len"])
-        tokens_per_doc = (seq_len + 1) * 64
-        doc_paths = generate_synthetic_corpus(
-            doc_dir, num_docs=4, tokens_per_doc=tokens_per_doc
+        # Ensure tokenizer exists
+        tokenizer_path = _ensure_tokenizer(
+            tokenizer_path=tokenizer_path,
+            training_data_dir=train_dir,
+            vocab_size=32000,
         )
-        vocab = [f"DOC{i}" for i in range(4)]
-        tokenizer = SyntheticTokenizer(vocab=vocab)
+
+        # Load tokenizer
+        tokenizer = SentencePieceTokenizer(tokenizer_path)
         model_cfg["vocab_size"] = tokenizer.vocab_size
+
+        # Get training files
+        file_paths = _list_txt_files(train_dir)
+        print(f"Training on {len(file_paths)} files")
+        print(f"Tokenizer vocab size: {tokenizer.vocab_size:,}")
+        print()
+
+        # Create dataset
+        dataset_cache_dir = cache_dir / "smoke_test"
         dataset = DocumentDataset(
-            doc_paths,
+            file_paths,
             tokenizer,
-            seq_len=seq_len,
-            cache_dir=cache_dir,
+            seq_len=int(data_cfg["seq_len"]),
+            cache_dir=dataset_cache_dir,
             seed=int(train_cfg["seed"]),
             shuffle=True,
         )
-        # Include config hashes in checkpoint metadata
+
+        # Create model
+        model = EIGNModel(**model_cfg)
+        param_count = sum(p.numel() for p in model.parameters())
+        print(f"Model parameters: {param_count:,}")
+        print()
+
+        # Config hashes
         train_cfg["config_hashes"] = {
             "model": _hash_config(model_cfg),
-            "train": _hash_config(
-                {k: v for k, v in train_cfg.items() if k != "config_hashes"}
-            ),
+            "train": _hash_config({k: v for k, v in train_cfg.items() if k != "config_hashes"}),
             "data": _hash_config(data_cfg),
         }
-        model = EIGNModel(**model_cfg)
+
+        # Train
+        print("Starting smoke test training...")
+        print("=" * 70)
         try:
             train(
                 model,
@@ -141,41 +270,54 @@ def main() -> None:
                 device=device,
                 pad_id=tokenizer.pad_id,
             )
+            print("\n" + "=" * 70)
+            print("✓ SMOKE TEST PASSED")
+            print("=" * 70)
         finally:
             dataset.close()
+
         return
 
-    # Full training: use environment-aware paths
-    data_dir = get_data_dir()
-    cache_dir = get_cache_dir()
+    # ========================================================================
+    # FULL TRAINING MODE
+    # ========================================================================
+    print("=" * 70)
+    print("FULL TRAINING MODE")
+    print("=" * 70)
+    print()
 
-    # Resolve paths from config (fall back to environment defaults)
-    train_dir = Path(data_cfg.get("train_dir", data_dir / "train"))
-    tokenizer_model = Path(data_cfg.get("tokenizer_model", data_dir / "tokenizer.model"))
-    dataset_cache_dir = Path(data_cfg.get("cache_dir", cache_dir / "train"))
+    # Resolve paths from config
+    train_dir = data_dir / data_cfg.get("train_dir", "train")
+    tokenizer_path = artifacts_dir / "tokenizer" / "v0001" / "eign_spm_unigram_32k.model"
+    dataset_cache_dir = cache_dir / data_cfg.get("cache_dir", "train")
 
-    # Validate paths exist
-    if not train_dir.exists():
-        raise FileNotFoundError(
-            f"Training data directory not found: {train_dir}\n"
-            f"Please place training .txt files in this directory."
+    # Ensure tokenizer exists
+    tokenizer_path = _ensure_tokenizer(
+        tokenizer_path=tokenizer_path,
+        training_data_dir=train_dir,
+        vocab_size=32000,
+    )
+
+    # Load tokenizer
+    tokenizer = SentencePieceTokenizer(tokenizer_path)
+    if "vocab_size" in model_cfg and model_cfg["vocab_size"] != tokenizer.vocab_size:
+        raise ValueError(
+            f"Config vocab_size ({model_cfg['vocab_size']}) does not match "
+            f"tokenizer vocab_size ({tokenizer.vocab_size})"
         )
-    if not tokenizer_model.exists():
-        raise FileNotFoundError(
-            f"Tokenizer model not found: {tokenizer_model}\n"
-            f"Please ensure the tokenizer model is available."
-        )
+    model_cfg["vocab_size"] = tokenizer.vocab_size
 
+    # Get training files
+    file_paths = _list_txt_files(train_dir)
+    print(f"Training files: {len(file_paths)}")
+    print(f"Tokenizer vocab size: {tokenizer.vocab_size:,}")
+    print()
+
+    # Create dataset
     seq_len = int(data_cfg["seq_len"])
     shuffle = bool(data_cfg.get("shuffle", True))
     data_seed = int(data_cfg.get("seed", train_cfg["seed"]))
 
-    tokenizer = SentencePieceTokenizer(tokenizer_model)
-    if "vocab_size" in model_cfg and model_cfg["vocab_size"] != tokenizer.vocab_size:
-        raise ValueError("model.vocab_size must match tokenizer vocabulary size.")
-    model_cfg["vocab_size"] = tokenizer.vocab_size
-
-    file_paths = _list_txt_files(train_dir)
     dataset = DocumentDataset(
         file_paths,
         tokenizer,
@@ -185,26 +327,32 @@ def main() -> None:
         shuffle=shuffle,
     )
 
-    # Environment-aware output directory
-    runs_dir = get_runs_dir()
+    # Create model
+    model = EIGNModel(**model_cfg)
+    param_count = sum(p.numel() for p in model.parameters())
+    print(f"Model parameters: {param_count:,}")
+    print()
+
+    # Output directory
     output_dir = train_cfg.get("output_dir", str(runs_dir / "train"))
 
-    # Include config hashes in checkpoint metadata
+    # Config hashes
     train_cfg = dict(train_cfg)
     train_cfg["output_dir"] = output_dir
     train_cfg["config_hashes"] = {
         "model": _hash_config(model_cfg),
-        "train": _hash_config(
-            {k: v for k, v in train_cfg.items() if k != "config_hashes"}
-        ),
+        "train": _hash_config({k: v for k, v in train_cfg.items() if k != "config_hashes"}),
         "data": _hash_config(data_cfg),
     }
-    model = EIGNModel(**model_cfg)
+
+    # Train
+    print("Starting full training...")
+    print("=" * 70)
     train(
         model,
         dataset,
         train_cfg,
-        output_dir=train_cfg["output_dir"],
+        output_dir=output_dir,
         device=device,
         pad_id=tokenizer.pad_id,
     )

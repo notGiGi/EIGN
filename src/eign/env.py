@@ -70,3 +70,18 @@ def get_data_dir() -> Path:
     else:
         data_dir = get_project_root() / "data"
     return data_dir
+
+
+def get_artifacts_dir() -> Path:
+    """Get artifacts directory for tokenizers and other artifacts.
+
+    Returns:
+        Path to artifacts directory (environment-aware)
+    """
+    env = detect_environment()
+    if env == "kaggle":
+        artifacts_dir = Path("/kaggle/working/artifacts")
+    else:
+        artifacts_dir = get_project_root() / "artifacts"
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    return artifacts_dir

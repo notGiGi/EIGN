@@ -23,9 +23,13 @@ env/
 *~
 
 # Data and caches
+data/
 cache/
 *.npy
 *.mmap
+
+# Artifacts (tokenizers, etc.)
+artifacts/
 
 # Training outputs
 runs/
@@ -47,7 +51,3 @@ Thumbs.db
 # Jupyter
 .ipynb_checkpoints/
 *.ipynb
-
-# Model artifacts
-*.model
-*.vocab
