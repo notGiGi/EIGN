@@ -43,18 +43,6 @@ from eign.model import EIGNModel
 from eign.training.loop import train
 
 
-def _load_yaml(path: Path) -> dict:
-    """Load YAML configuration file."""
-    if not path.exists():
-        return {}
-    data = yaml.safe_load(path.read_text(encoding="utf-8"))
-    if data is None:
-        return {}
-    if not isinstance(data, dict):
-        raise ValueError(f"Expected a mapping in {path}")
-    return data
-
-
 def load_yaml_strict(path: Path) -> dict:
     """Load YAML configuration with strict validation (fail-fast, no silent failures).
 
