@@ -180,21 +180,42 @@ def main() -> None:
             else:
                 print("Single-GPU mode")
 
-        # Load configurations
+        # Load configurations - Direct YAML loading for reliability
         config_dir = REPO_ROOT / args.config_dir
 
-        # Robust loading: handle both {model: {...}} and {...} formats
-        raw_model_cfg = _load_yaml(config_dir / "model.yaml")
+        # Load model.yaml
+        model_path = config_dir / "model.yaml"
+        if not model_path.exists():
+            raise FileNotFoundError(f"model.yaml not found at {model_path}")
+        with open(model_path, "r") as f:
+            raw_model_cfg = yaml.safe_load(f)
+        if raw_model_cfg is None:
+            raise RuntimeError(f"model.yaml is empty: {model_path}")
         model_cfg = raw_model_cfg.get("model", raw_model_cfg)
 
-        raw_train_cfg = _load_yaml(config_dir / "train.yaml")
+        # Load train.yaml
+        train_path = config_dir / "train.yaml"
+        if not train_path.exists():
+            raise FileNotFoundError(f"train.yaml not found at {train_path}")
+        with open(train_path, "r") as f:
+            raw_train_cfg = yaml.safe_load(f)
+        if raw_train_cfg is None:
+            raise RuntimeError(f"train.yaml is empty: {train_path}")
         train_cfg = raw_train_cfg.get("train", raw_train_cfg)
 
-        raw_data_cfg = _load_yaml(config_dir / "data.yaml")
+        # Load data.yaml
+        data_path = config_dir / "data.yaml"
+        if not data_path.exists():
+            raise FileNotFoundError(f"data.yaml not found at {data_path}")
+        with open(data_path, "r") as f:
+            raw_data_cfg = yaml.safe_load(f)
+        if raw_data_cfg is None:
+            raise RuntimeError(f"data.yaml is empty: {data_path}")
         data_cfg = raw_data_cfg.get("data", raw_data_cfg)
 
         # Debug: log loaded config keys once (only on rank 0)
         if rank == 0:
+            print(f"[CONFIG] model.yaml path: {model_path}")
             print(f"[CONFIG] Loaded model.yaml keys: {list(model_cfg.keys())}")
 
         # Validate seq_len consistency
