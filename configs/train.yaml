@@ -10,7 +10,10 @@ train:
   max_grad_norm: 1.0
   log_every_steps: 10
   checkpoint_every_steps: 200
-  output_dir: runs/eign_v0
+  # Base output directory (supports Google Drive paths like /content/drive/MyDrive/eign)
+  # Leave null to use default local paths
+  base_output_dir: null
   seed: 123
   deterministic: true
-  resume_path: null
+  # Auto-resume: if true, automatically loads latest checkpoint from base_output_dir/checkpoints
+  auto_resume: true

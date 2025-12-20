@@ -297,17 +297,14 @@ def main() -> None:
         model_cfg = dict(model_cfg)
 
         # Smoke test parameters (small but real)
-        # KAGGLE FIX: Use /kaggle/working if in Kaggle, otherwise local runs dir
-        if Path("/kaggle/working").exists():
-            train_cfg["output_dir"] = "/kaggle/working"
-            print(f"[KAGGLE DETECTED] Using output_dir: /kaggle/working")
-        else:
-            train_cfg["output_dir"] = str(runs_dir / "smoke_test")
+        smoke_output_dir = str(runs_dir / "smoke_test")
+        train_cfg["base_output_dir"] = smoke_output_dir
         train_cfg["max_steps"] = 5
         train_cfg["batch_size"] = 2
         train_cfg["grad_accum_steps"] = 1
         train_cfg["log_every_steps"] = 1
         train_cfg["checkpoint_every_steps"] = 100  # No checkpoints in smoke test
+        train_cfg["auto_resume"] = False  # Disable auto-resume for smoke test
 
         # Use validated seq_len for both model and data
         model_cfg["max_seq_len"] = seq_len
@@ -382,7 +379,7 @@ def main() -> None:
                 model,
                 dataset,
                 train_cfg,
-                output_dir=train_cfg["output_dir"],
+                output_dir=smoke_output_dir,
                 device=device,
                 pad_id=tokenizer.pad_id,
             )
@@ -452,16 +449,25 @@ def main() -> None:
         f"dataset.seq_len ({dataset.seq_len})"
     )
 
-    # Output directory - CRITICAL: Force /kaggle/working in Kaggle environment
-    output_dir = train_cfg.get("output_dir", str(runs_dir / "train"))
+    # Output directory resolution with multi-environment support
+    base_output_dir = train_cfg.get("base_output_dir")
 
-    # KAGGLE FIX: If running in Kaggle, override output_dir to /kaggle/working
-    if Path("/kaggle/working").exists():
+    if base_output_dir:
+        # User specified base_output_dir (e.g., Google Drive path)
+        output_dir = str(Path(base_output_dir).resolve())
+        print(f"[INFO] Using base_output_dir: {output_dir}")
+    elif Path("/kaggle/working").exists():
+        # Auto-detect Kaggle
         output_dir = "/kaggle/working"
-        print(f"[KAGGLE DETECTED] Forcing output_dir to {output_dir}")
+        print(f"[KAGGLE DETECTED] Using: {output_dir}")
+    elif Path("/content/drive/MyDrive").exists():
+        # Auto-detect Google Colab with Drive mounted
+        output_dir = "/content/drive/MyDrive/eign"
+        print(f"[COLAB DETECTED] Using Google Drive: {output_dir}")
     else:
-        # Make absolute path for local runs
-        output_dir = str(Path(output_dir).resolve())
+        # Local development
+        output_dir = str((runs_dir / "train").resolve())
+        print(f"[LOCAL] Using: {output_dir}")
 
     # Config hashes
     train_cfg = dict(train_cfg)

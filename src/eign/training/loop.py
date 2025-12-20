@@ -202,6 +202,7 @@ def _save_checkpoint(
     # Single .pt file per checkpoint
     checkpoint_filename = f"eign_step_{step:08d}.pt"
     checkpoint_path = checkpoint_dir / checkpoint_filename
+    temp_checkpoint_path = checkpoint_dir / f".tmp_{checkpoint_filename}"
 
     # Prepare checkpoint payload
     checkpoint = {
@@ -215,8 +216,9 @@ def _save_checkpoint(
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
 
-    # Save checkpoint
-    torch.save(checkpoint, checkpoint_path)
+    # Atomic save: write to temp file, then rename (prevents corruption)
+    torch.save(checkpoint, temp_checkpoint_path)
+    temp_checkpoint_path.replace(checkpoint_path)
 
     # CRITICAL: Verify checkpoint file exists and has reasonable size
     assert checkpoint_path.exists(), f"[CHECKPOINT ERROR] File not found: {checkpoint_path}"
@@ -349,7 +351,6 @@ def train(
         "checkpoint_every_steps",
         "seed",
         "deterministic",
-        "resume_path",
     ]
     for key in required_keys:
         if key not in train_cfg:
@@ -367,7 +368,7 @@ def train(
     checkpoint_every_steps = int(train_cfg["checkpoint_every_steps"])
     seed = int(train_cfg["seed"])
     deterministic = bool(train_cfg["deterministic"])
-    resume_path = train_cfg["resume_path"]
+    auto_resume = train_cfg.get("auto_resume", False)
     config_hashes = train_cfg.get("config_hashes")
     if not isinstance(config_hashes, dict) or not config_hashes:
         # Ensure checkpoints always include a config hash for reproducibility.
@@ -450,18 +451,36 @@ def train(
     tokens_seen = 0
 
     try:
-        if resume_path:
-            resume_dir = Path(resume_path)
-            state = _load_checkpoint(
-                resume_dir,
-                model,
-                optimizer,
-                scheduler,
-                scaler if use_scaler else None,
-                device,
-            )
-            global_step = state["step"]
-            tokens_seen = state["tokens_seen"]
+        # Auto-resume: check if checkpoints exist and load latest
+        if auto_resume and checkpoint_dir.exists():
+            checkpoint_files = sorted(checkpoint_dir.glob("eign_step_*.pt"))
+            if checkpoint_files:
+                print("=" * 70)
+                print("[AUTO-RESUME] Found existing checkpoints, resuming training")
+                print("=" * 70)
+                state = _load_checkpoint(
+                    checkpoint_dir,
+                    model,
+                    optimizer,
+                    scheduler,
+                    scaler if use_scaler else None,
+                    device,
+                )
+                global_step = state["step"]
+                tokens_seen = state["tokens_seen"]
+            else:
+                print("=" * 70)
+                print("[TRAINING] No checkpoints found, starting from scratch")
+                print("=" * 70)
+        else:
+            if not auto_resume:
+                print("=" * 70)
+                print("[TRAINING] Auto-resume disabled, starting from scratch")
+                print("=" * 70)
+            else:
+                print("=" * 70)
+                print("[TRAINING] Checkpoint directory not found, starting from scratch")
+                print("=" * 70)
 
         optimizer.zero_grad(set_to_none=True)
         accum_steps = 0
