@@ -11,7 +11,6 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from safetensors.torch import load_file, save_file
 from torch import nn
 from torch.utils.data import DataLoader, IterableDataset
 
@@ -163,27 +162,27 @@ def _safe_close_writer(writer: object | None) -> None:
 
 
 def _create_checkpoint_zip(checkpoint_dir: Path, output_dir: Path) -> None:
-    """Create or update checkpoint ZIP for Kaggle download."""
+    """Create or update checkpoint ZIP for Kaggle download (ONLY .pt files)."""
     zip_path = output_dir / "eign_checkpoints.zip"
 
-    # CRITICAL: Verify checkpoints exist before creating ZIP
-    checkpoint_files = []
-    for checkpoint_subdir in sorted(checkpoint_dir.glob("step_*")):
-        if checkpoint_subdir.is_dir():
-            for file in checkpoint_subdir.rglob("*"):
-                if file.is_file() and (file.suffix == ".pt" or file.suffix == ".safetensors" or file.suffix == ".json"):
-                    checkpoint_files.append(file)
+    # CRITICAL: Only include .pt checkpoint files (NOT directories, NOT tensorboard, NOT artifacts)
+    checkpoint_files = sorted(checkpoint_dir.glob("eign_step_*.pt"))
 
     if not checkpoint_files:
-        raise RuntimeError(f"[CHECKPOINT ZIP] No checkpoint files found in {checkpoint_dir}. Cannot create empty ZIP.")
+        raise RuntimeError(f"[CHECKPOINT ZIP] No .pt checkpoint files found in {checkpoint_dir}. Cannot create empty ZIP.")
 
-    # Create ZIP with verified checkpoints
+    # Create ZIP with ONLY .pt files (use basename to avoid path issues)
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
         for file in checkpoint_files:
-            arcname = file.relative_to(checkpoint_dir.parent)
-            zipf.write(file, arcname)
+            # Use only filename (no path) in archive
+            zipf.write(file, arcname=file.name)
 
-    print(f"[CHECKPOINT ZIP] Created with {len(checkpoint_files)} files, size: {zip_path.stat().st_size / (1024*1024):.2f} MB")
+    zip_size_mb = zip_path.stat().st_size / (1024 * 1024)
+    print(f"[CHECKPOINT ZIP] Created: {zip_path.name} with {len(checkpoint_files)} .pt files, size={zip_size_mb:.1f}MB")
+
+    # Sync to disk (important for Kaggle)
+    import os
+    os.sync() if hasattr(os, 'sync') else None
 
 
 def _save_checkpoint(
@@ -197,70 +196,42 @@ def _save_checkpoint(
     config_hashes: dict[str, str],
     output_dir: Path | None = None,
 ) -> None:
-    # FIX A: Handle tied weights (tok_embeddings.weight and lm_head.weight share memory)
-    step_dir = checkpoint_dir / f"step_{step:08d}"
-    step_dir.mkdir(parents=True, exist_ok=True)
+    """Save checkpoint as single unified .pt file (portable format)."""
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-    state_dict = model.state_dict()
-    state = {}
-    seen_storage: dict[int, str] = {}
+    # Single .pt file per checkpoint
+    checkpoint_filename = f"eign_step_{step:08d}.pt"
+    checkpoint_path = checkpoint_dir / checkpoint_filename
 
-    for name, tensor in state_dict.items():
-        tensor_cpu = tensor.detach().cpu()
-        if not isinstance(tensor_cpu, torch.Tensor) or tensor_cpu.numel() == 0:
-            state[name] = tensor_cpu
-            continue
-
-        # Detect shared storage by checking data pointer
-        try:
-            storage_ptr = tensor_cpu.untyped_storage().data_ptr()
-        except AttributeError:
-            storage_ptr = tensor_cpu.storage().data_ptr()
-
-        if storage_ptr in seen_storage:
-            # Clone tensors that share storage to avoid safetensors error
-            state[name] = tensor_cpu.clone()
-        else:
-            seen_storage[storage_ptr] = name
-            state[name] = tensor_cpu
-
-    # Save model state
-    model_path = step_dir / "model.safetensors"
-    save_file(state, str(model_path))
-
-    # Save optimizer/scheduler state
-    optimizer_path = step_dir / "optimizer.pt"
-    torch.save(
-        {
-            "optimizer": optimizer.state_dict(),
-            "scheduler": scheduler.state_dict(),
-            "scaler": scaler.state_dict() if scaler is not None else None,
-        },
-        optimizer_path,
-    )
-
-    # Save metadata
-    metadata_path = step_dir / "metadata.json"
-    meta = {
-        "global_step": step,
-        "tokens_seen": tokens_seen,
+    # Prepare checkpoint payload
+    checkpoint = {
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "scheduler_state_dict": scheduler.state_dict(),
+        "scaler_state_dict": scaler.state_dict() if scaler is not None else None,
+        "step": int(step),
+        "tokens_seen": int(tokens_seen),
         "config_hashes": config_hashes,
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
-    metadata_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
-    # CRITICAL: Verify checkpoint files exist on disk
-    assert model_path.exists(), f"[CHECKPOINT ERROR] Model file not found: {model_path}"
-    assert optimizer_path.exists(), f"[CHECKPOINT ERROR] Optimizer file not found: {optimizer_path}"
-    assert metadata_path.exists(), f"[CHECKPOINT ERROR] Metadata file not found: {metadata_path}"
+    # Save checkpoint
+    torch.save(checkpoint, checkpoint_path)
 
-    model_size_mb = model_path.stat().st_size / (1024 * 1024)
-    optimizer_size_mb = optimizer_path.stat().st_size / (1024 * 1024)
+    # CRITICAL: Verify checkpoint file exists and has reasonable size
+    assert checkpoint_path.exists(), f"[CHECKPOINT ERROR] File not found: {checkpoint_path}"
 
-    print(f"[CHECKPOINT] Saved successfully at step={step}")
-    print(f"[CHECKPOINT]   Model: {model_path} ({model_size_mb:.2f} MB)")
-    print(f"[CHECKPOINT]   Optimizer: {optimizer_path} ({optimizer_size_mb:.2f} MB)")
-    print(f"[CHECKPOINT]   Metadata: {metadata_path}")
+    file_size = checkpoint_path.stat().st_size
+    file_size_mb = file_size / (1024 * 1024)
+
+    # Sanity check: checkpoint should be at least 10MB (for 138M param model, expect ~500MB+)
+    min_size_mb = 10
+    assert file_size_mb >= min_size_mb, (
+        f"[CHECKPOINT ERROR] File too small: {checkpoint_path} "
+        f"({file_size_mb:.2f} MB < {min_size_mb} MB minimum)"
+    )
+
+    print(f"[CHECKPOINT] Saved: {checkpoint_path} size={file_size_mb:.1f}MB step={step}")
 
     # Create/update ZIP for Kaggle
     if output_dir is not None:
@@ -278,27 +249,44 @@ def _load_checkpoint(
     scaler: torch.cuda.amp.GradScaler | None,
     device: torch.device,
 ) -> dict[str, int]:
-    model_path = checkpoint_dir / "model.safetensors"
-    optim_path = checkpoint_dir / "optimizer.pt"
-    meta_path = checkpoint_dir / "metadata.json"
+    """Load checkpoint from unified .pt file."""
+    # Find latest checkpoint by lexicographic order
+    checkpoint_files = sorted(checkpoint_dir.glob("eign_step_*.pt"))
+    if not checkpoint_files:
+        raise FileNotFoundError(f"No checkpoint files found in {checkpoint_dir}")
 
-    model_state = load_file(str(model_path))
-    # Load state dict - model will handle weight tying in its __init__
-    model.load_state_dict(model_state, strict=False)
-    optim_state = torch.load(optim_path, map_location="cpu")
-    optimizer.load_state_dict(optim_state["optimizer"])
-    scheduler.load_state_dict(optim_state["scheduler"])
-    if scaler is not None and optim_state.get("scaler") is not None:
-        scaler.load_state_dict(optim_state["scaler"])
+    checkpoint_path = checkpoint_files[-1]  # Latest checkpoint
+    print(f"[CHECKPOINT] Loading from: {checkpoint_path}")
 
+    # Load checkpoint
+    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+
+    # Restore model state
+    model.load_state_dict(checkpoint["model_state_dict"])
+
+    # Restore optimizer state
+    if checkpoint.get("optimizer_state_dict"):
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+
+    # Restore scheduler state
+    if checkpoint.get("scheduler_state_dict"):
+        scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+
+    # Restore AMP scaler state
+    if scaler is not None and checkpoint.get("scaler_state_dict"):
+        scaler.load_state_dict(checkpoint["scaler_state_dict"])
+
+    # Move optimizer states to device
     for state in optimizer.state.values():
         for key, value in state.items():
             if isinstance(value, torch.Tensor):
                 state[key] = value.to(device)
 
-    meta = json.loads(meta_path.read_text(encoding="utf-8"))
-    step = int(meta.get("global_step", meta.get("step", 0)))
-    tokens_seen = int(meta.get("tokens_seen", 0))
+    step = int(checkpoint.get("step", 0))
+    tokens_seen = int(checkpoint.get("tokens_seen", 0))
+
+    print(f"[CHECKPOINT] Resuming from step={step} tokens_seen={tokens_seen}")
+
     return {
         "step": step,
         "tokens_seen": tokens_seen,
