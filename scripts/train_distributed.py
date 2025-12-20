@@ -182,9 +182,20 @@ def main() -> None:
 
         # Load configurations
         config_dir = REPO_ROOT / args.config_dir
-        model_cfg = _load_yaml(config_dir / "model.yaml").get("model", {})
-        train_cfg = _load_yaml(config_dir / "train.yaml").get("train", {})
-        data_cfg = _load_yaml(config_dir / "data.yaml").get("data", {})
+
+        # Robust loading: handle both {model: {...}} and {...} formats
+        raw_model_cfg = _load_yaml(config_dir / "model.yaml")
+        model_cfg = raw_model_cfg.get("model", raw_model_cfg)
+
+        raw_train_cfg = _load_yaml(config_dir / "train.yaml")
+        train_cfg = raw_train_cfg.get("train", raw_train_cfg)
+
+        raw_data_cfg = _load_yaml(config_dir / "data.yaml")
+        data_cfg = raw_data_cfg.get("data", raw_data_cfg)
+
+        # Debug: log loaded config keys once (only on rank 0)
+        if rank == 0:
+            print(f"[CONFIG] Loaded model.yaml keys: {list(model_cfg.keys())}")
 
         # Validate seq_len consistency
         seq_len = model_cfg.get("max_seq_len", 512)
