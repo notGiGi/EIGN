@@ -55,6 +55,37 @@ def _load_yaml(path: Path) -> dict:
     return data
 
 
+def load_yaml_strict(path: Path) -> dict:
+    """Load YAML configuration with strict validation (fail-fast, no silent failures).
+
+    This function is used for critical training configs (model, data, train).
+    It NEVER returns {} and always fails loudly if something is wrong.
+
+    Args:
+        path: Path to YAML file
+
+    Returns:
+        Loaded configuration dict
+
+    Raises:
+        FileNotFoundError: If file doesn't exist
+        RuntimeError: If file is empty or invalid
+    """
+    if not path.exists():
+        raise FileNotFoundError(f"Configuration file not found: {path}")
+
+    with open(path, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+
+    if data is None:
+        raise RuntimeError(f"Configuration file is empty: {path}")
+
+    if not isinstance(data, dict):
+        raise RuntimeError(f"Expected YAML dict but got {type(data).__name__}: {path}")
+
+    return data
+
+
 def _hash_config(config: dict) -> str:
     """Generate deterministic hash of configuration."""
     payload = json.dumps(config, sort_keys=True, separators=(",", ":"), default=str)
@@ -251,40 +282,23 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    # Load configurations - Direct YAML loading for reliability
+    # Load configurations - STRICT loading (fail-fast, no silent failures)
     config_dir = REPO_ROOT / args.config_dir
 
-    # Load model.yaml
-    model_path = config_dir / "model.yaml"
-    if not model_path.exists():
-        raise FileNotFoundError(f"model.yaml not found at {model_path}")
-    with open(model_path, "r") as f:
-        raw_model_cfg = yaml.safe_load(f)
-    if raw_model_cfg is None:
-        raise RuntimeError(f"model.yaml is empty: {model_path}")
-    model_cfg = raw_model_cfg.get("model", raw_model_cfg)
-    print(f"[CONFIG] model.yaml path: {model_path}")
-    print(f"[CONFIG] Loaded model.yaml keys: {list(model_cfg.keys())}")
+    # Load configs ONCE using strict loader (never returns {})
+    raw_model_cfg = load_yaml_strict(config_dir / "model.yaml")
+    raw_data_cfg = load_yaml_strict(config_dir / "data.yaml")
+    raw_train_cfg = load_yaml_strict(config_dir / "train.yaml")
 
-    # Load train.yaml
-    train_path = config_dir / "train.yaml"
-    if not train_path.exists():
-        raise FileNotFoundError(f"train.yaml not found at {train_path}")
-    with open(train_path, "r") as f:
-        raw_train_cfg = yaml.safe_load(f)
-    if raw_train_cfg is None:
-        raise RuntimeError(f"train.yaml is empty: {train_path}")
+    # Normalize: handle both {model: {...}} and {...} formats
+    model_cfg = raw_model_cfg.get("model", raw_model_cfg)
+    data_cfg = raw_data_cfg.get("data", raw_data_cfg)
     train_cfg = raw_train_cfg.get("train", raw_train_cfg)
 
-    # Load data.yaml
-    data_path = config_dir / "data.yaml"
-    if not data_path.exists():
-        raise FileNotFoundError(f"data.yaml not found at {data_path}")
-    with open(data_path, "r") as f:
-        raw_data_cfg = yaml.safe_load(f)
-    if raw_data_cfg is None:
-        raise RuntimeError(f"data.yaml is empty: {data_path}")
-    data_cfg = raw_data_cfg.get("data", raw_data_cfg)
+    # Startup diagnostic logs
+    print(f"[CONFIG] model.yaml keys: {list(model_cfg.keys())}")
+    print(f"[CONFIG] data.yaml keys: {list(data_cfg.keys())}")
+    print(f"[CONFIG] train.yaml keys: {list(train_cfg.keys())}")
 
     # Validate seq_len consistency BEFORE any processing
     seq_len = _validate_seq_len_consistency(model_cfg, data_cfg)
