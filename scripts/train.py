@@ -297,7 +297,12 @@ def main() -> None:
         model_cfg = dict(model_cfg)
 
         # Smoke test parameters (small but real)
-        train_cfg["output_dir"] = str(runs_dir / "smoke_test")
+        # KAGGLE FIX: Use /kaggle/working if in Kaggle, otherwise local runs dir
+        if Path("/kaggle/working").exists():
+            train_cfg["output_dir"] = "/kaggle/working"
+            print(f"[KAGGLE DETECTED] Using output_dir: /kaggle/working")
+        else:
+            train_cfg["output_dir"] = str(runs_dir / "smoke_test")
         train_cfg["max_steps"] = 5
         train_cfg["batch_size"] = 2
         train_cfg["grad_accum_steps"] = 1
@@ -447,8 +452,16 @@ def main() -> None:
         f"dataset.seq_len ({dataset.seq_len})"
     )
 
-    # Output directory
+    # Output directory - CRITICAL: Force /kaggle/working in Kaggle environment
     output_dir = train_cfg.get("output_dir", str(runs_dir / "train"))
+
+    # KAGGLE FIX: If running in Kaggle, override output_dir to /kaggle/working
+    if Path("/kaggle/working").exists():
+        output_dir = "/kaggle/working"
+        print(f"[KAGGLE DETECTED] Forcing output_dir to {output_dir}")
+    else:
+        # Make absolute path for local runs
+        output_dir = str(Path(output_dir).resolve())
 
     # Config hashes
     train_cfg = dict(train_cfg)
