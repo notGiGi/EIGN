@@ -166,14 +166,24 @@ def _create_checkpoint_zip(checkpoint_dir: Path, output_dir: Path) -> None:
     """Create or update checkpoint ZIP for Kaggle download."""
     zip_path = output_dir / "eign_checkpoints.zip"
 
-    # Create ZIP with all checkpoints
+    # CRITICAL: Verify checkpoints exist before creating ZIP
+    checkpoint_files = []
+    for checkpoint_subdir in sorted(checkpoint_dir.glob("step_*")):
+        if checkpoint_subdir.is_dir():
+            for file in checkpoint_subdir.rglob("*"):
+                if file.is_file() and (file.suffix == ".pt" or file.suffix == ".safetensors" or file.suffix == ".json"):
+                    checkpoint_files.append(file)
+
+    if not checkpoint_files:
+        raise RuntimeError(f"[CHECKPOINT ZIP] No checkpoint files found in {checkpoint_dir}. Cannot create empty ZIP.")
+
+    # Create ZIP with verified checkpoints
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
-        for checkpoint_subdir in sorted(checkpoint_dir.glob("step_*")):
-            if checkpoint_subdir.is_dir():
-                for file in checkpoint_subdir.rglob("*"):
-                    if file.is_file():
-                        arcname = file.relative_to(checkpoint_dir.parent)
-                        zipf.write(file, arcname)
+        for file in checkpoint_files:
+            arcname = file.relative_to(checkpoint_dir.parent)
+            zipf.write(file, arcname)
+
+    print(f"[CHECKPOINT ZIP] Created with {len(checkpoint_files)} files, size: {zip_path.stat().st_size / (1024*1024):.2f} MB")
 
 
 def _save_checkpoint(
@@ -214,30 +224,50 @@ def _save_checkpoint(
             seen_storage[storage_ptr] = name
             state[name] = tensor_cpu
 
-    save_file(state, str(step_dir / "model.safetensors"))
+    # Save model state
+    model_path = step_dir / "model.safetensors"
+    save_file(state, str(model_path))
+
+    # Save optimizer/scheduler state
+    optimizer_path = step_dir / "optimizer.pt"
     torch.save(
         {
             "optimizer": optimizer.state_dict(),
             "scheduler": scheduler.state_dict(),
             "scaler": scaler.state_dict() if scaler is not None else None,
         },
-        step_dir / "optimizer.pt",
+        optimizer_path,
     )
+
+    # Save metadata
+    metadata_path = step_dir / "metadata.json"
     meta = {
         "global_step": step,
         "tokens_seen": tokens_seen,
         "config_hashes": config_hashes,
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
-    (step_dir / "metadata.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    metadata_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+
+    # CRITICAL: Verify checkpoint files exist on disk
+    assert model_path.exists(), f"[CHECKPOINT ERROR] Model file not found: {model_path}"
+    assert optimizer_path.exists(), f"[CHECKPOINT ERROR] Optimizer file not found: {optimizer_path}"
+    assert metadata_path.exists(), f"[CHECKPOINT ERROR] Metadata file not found: {metadata_path}"
+
+    model_size_mb = model_path.stat().st_size / (1024 * 1024)
+    optimizer_size_mb = optimizer_path.stat().st_size / (1024 * 1024)
+
+    print(f"[CHECKPOINT] Saved successfully at step={step}")
+    print(f"[CHECKPOINT]   Model: {model_path} ({model_size_mb:.2f} MB)")
+    print(f"[CHECKPOINT]   Optimizer: {optimizer_path} ({optimizer_size_mb:.2f} MB)")
+    print(f"[CHECKPOINT]   Metadata: {metadata_path}")
 
     # Create/update ZIP for Kaggle
     if output_dir is not None:
         try:
             _create_checkpoint_zip(checkpoint_dir, output_dir)
-            print(f"[CHECKPOINT] Saved and zipped at step={step}")
         except Exception as e:
-            print(f"[CHECKPOINT] Warning: ZIP creation failed: {e}")
+            print(f"[CHECKPOINT ZIP] Warning: ZIP creation failed: {e}")
 
 
 def _load_checkpoint(
@@ -367,11 +397,19 @@ def train(
 
     set_determinism(seed, deterministic)
 
-    output_dir = Path(output_dir)
+    # CRITICAL: Use absolute paths for Kaggle persistence
+    output_dir = Path(output_dir).resolve()
     checkpoint_dir = output_dir / "checkpoints"
     log_dir = output_dir / "tensorboard"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     log_dir.mkdir(parents=True, exist_ok=True)
+
+    print("=" * 70)
+    print("CHECKPOINT DIRECTORIES (ABSOLUTE PATHS)")
+    print(f"[INFO] Output dir: {output_dir}")
+    print(f"[INFO] Checkpoint dir: {checkpoint_dir}")
+    print(f"[INFO] Log dir: {log_dir}")
+    print("=" * 70)
 
     # Safe optimization: Enable TF32 on Ampere GPUs
     if device.type == "cuda":
@@ -519,6 +557,25 @@ def train(
                 if gpu_mem is not None:
                     _safe_log_scalar(writer, "system/gpu_mem_used_gb", gpu_mem[0], global_step)
                     _safe_log_scalar(writer, "system/gpu_mem_total_gb", gpu_mem[1], global_step)
+
+            # Early test checkpoint to validate infrastructure
+            if global_step == 50:
+                print("\n" + "=" * 70)
+                print("[EARLY TEST CHECKPOINT] Saving at step 50 to validate disk write")
+                print("=" * 70)
+                _save_checkpoint(
+                    checkpoint_dir,
+                    model,
+                    optimizer,
+                    scheduler,
+                    scaler if use_scaler else None,
+                    global_step,
+                    tokens_seen,
+                    config_hashes,
+                    output_dir,
+                )
+                print("[EARLY TEST CHECKPOINT] Validation complete. Training continues.")
+                print("=" * 70 + "\n")
 
             if global_step % checkpoint_every_steps == 0:
                 _save_checkpoint(
