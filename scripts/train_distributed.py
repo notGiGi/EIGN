@@ -200,7 +200,9 @@ def main() -> None:
                 print("Single-GPU mode")
 
         # Load configurations - STRICT loading (fail-fast, no silent failures)
-        config_dir = REPO_ROOT / args.config_dir
+        # Handle both directory path and file path (if file passed, use parent)
+        config_path = REPO_ROOT / args.config_dir
+        config_dir = config_path.parent if config_path.is_file() else config_path
 
         # Load configs ONCE using strict loader (never returns {})
         raw_model_cfg = load_yaml_strict(config_dir / "model.yaml")
