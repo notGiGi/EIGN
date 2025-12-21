@@ -1,7 +1,7 @@
 train:
   batch_size: 8
   grad_accum_steps: 1
-  max_steps: 1000
+  max_steps: 30000
   num_epochs: 1
   lr: 3.0e-4
   betas: [0.9, 0.95]
@@ -9,7 +9,7 @@ train:
   warmup_steps: 100
   max_grad_norm: 1.0
   log_every_steps: 10
-  checkpoint_every_steps: 200
+  checkpoint_every_steps: 5000
   # Base output directory (supports Google Drive paths like /content/drive/MyDrive/eign)
   # Leave null to use default local paths
   base_output_dir: null
