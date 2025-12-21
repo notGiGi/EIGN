@@ -5,7 +5,6 @@ import json
 import math
 import random
 import time
-import zipfile
 from contextlib import nullcontext
 from pathlib import Path
 
@@ -161,32 +160,8 @@ def _safe_close_writer(writer: object | None) -> None:
             pass
 
 
-def _create_checkpoint_zip(checkpoint_dir: Path, output_dir: Path) -> None:
-    """Create or update checkpoint ZIP for Kaggle download (ONLY .pt files)."""
-    zip_path = output_dir / "eign_checkpoints.zip"
-
-    # CRITICAL: Only include .pt checkpoint files (NOT directories, NOT tensorboard, NOT artifacts)
-    checkpoint_files = sorted(checkpoint_dir.glob("eign_step_*.pt"))
-
-    if not checkpoint_files:
-        raise RuntimeError(f"[CHECKPOINT ZIP] No .pt checkpoint files found in {checkpoint_dir}. Cannot create empty ZIP.")
-
-    # Create ZIP with ONLY .pt files (use basename to avoid path issues)
-    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
-        for file in checkpoint_files:
-            # Use only filename (no path) in archive
-            zipf.write(file, arcname=file.name)
-
-    zip_size_mb = zip_path.stat().st_size / (1024 * 1024)
-    print(f"[CHECKPOINT ZIP] Created: {zip_path.name} with {len(checkpoint_files)} .pt files, size={zip_size_mb:.1f}MB")
-
-    # Sync to disk (important for Kaggle)
-    import os
-    os.sync() if hasattr(os, 'sync') else None
-
-
 def _save_checkpoint(
-    checkpoint_dir: Path,
+    output_dir: Path,
     model: nn.Module,
     optimizer: torch.optim.Optimizer,
     scheduler: torch.optim.lr_scheduler.LRScheduler,
@@ -194,15 +169,28 @@ def _save_checkpoint(
     step: int,
     tokens_seen: int,
     config_hashes: dict[str, str],
-    output_dir: Path | None = None,
 ) -> None:
-    """Save checkpoint as single unified .pt file (portable format)."""
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    """Save checkpoint as single .pt file directly to output directory.
 
-    # Single .pt file per checkpoint
+    Checkpoint files are saved directly to output_dir (typically /kaggle/working/)
+    with no subdirectories, no ZIPs, no intermediate steps.
+
+    Args:
+        output_dir: Directory to save checkpoint (e.g., /kaggle/working/)
+        model: Model to checkpoint
+        optimizer: Optimizer to checkpoint
+        scheduler: LR scheduler to checkpoint
+        scaler: Gradient scaler to checkpoint (optional)
+        step: Current training step
+        tokens_seen: Total tokens processed
+        config_hashes: Configuration hashes for validation
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Single .pt file per checkpoint (no subdirectories)
     checkpoint_filename = f"eign_step_{step:08d}.pt"
-    checkpoint_path = checkpoint_dir / checkpoint_filename
-    temp_checkpoint_path = checkpoint_dir / f".tmp_{checkpoint_filename}"
+    checkpoint_path = output_dir / checkpoint_filename
+    temp_checkpoint_path = output_dir / f".tmp_{checkpoint_filename}"
 
     # Prepare checkpoint payload
     checkpoint = {
@@ -220,27 +208,20 @@ def _save_checkpoint(
     torch.save(checkpoint, temp_checkpoint_path)
     temp_checkpoint_path.replace(checkpoint_path)
 
-    # CRITICAL: Verify checkpoint file exists and has reasonable size
-    assert checkpoint_path.exists(), f"[CHECKPOINT ERROR] File not found: {checkpoint_path}"
+    # Verify checkpoint file exists and has reasonable size
+    if not checkpoint_path.exists():
+        raise RuntimeError(f"Checkpoint save failed: {checkpoint_path} not found")
 
-    file_size = checkpoint_path.stat().st_size
-    file_size_mb = file_size / (1024 * 1024)
+    file_size_mb = checkpoint_path.stat().st_size / (1024 * 1024)
 
-    # Sanity check: checkpoint should be at least 10MB (for 138M param model, expect ~500MB+)
-    min_size_mb = 10
-    assert file_size_mb >= min_size_mb, (
-        f"[CHECKPOINT ERROR] File too small: {checkpoint_path} "
-        f"({file_size_mb:.2f} MB < {min_size_mb} MB minimum)"
-    )
+    # Sanity check: checkpoint should be at least 10MB
+    if file_size_mb < 10:
+        raise RuntimeError(
+            f"Checkpoint suspiciously small: {checkpoint_path} "
+            f"({file_size_mb:.2f} MB)"
+        )
 
-    print(f"[CHECKPOINT] Saved: {checkpoint_path} size={file_size_mb:.1f}MB step={step}")
-
-    # Create/update ZIP for Kaggle
-    if output_dir is not None:
-        try:
-            _create_checkpoint_zip(checkpoint_dir, output_dir)
-        except Exception as e:
-            print(f"[CHECKPOINT ZIP] Warning: ZIP creation failed: {e}")
+    print(f"[CHECKPOINT] Saved: {checkpoint_filename} ({file_size_mb:.1f} MB)")
 
 
 def _load_checkpoint(
@@ -388,16 +369,20 @@ def train(
 
     # CRITICAL: Use absolute paths for Kaggle persistence
     output_dir = Path(output_dir).resolve()
-    checkpoint_dir = output_dir / "checkpoints"
     log_dir = output_dir / "tensorboard"
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
     log_dir.mkdir(parents=True, exist_ok=True)
 
     print("=" * 70)
-    print("CHECKPOINT DIRECTORIES (ABSOLUTE PATHS)")
-    print(f"[INFO] Output dir: {output_dir}")
-    print(f"[INFO] Checkpoint dir: {checkpoint_dir}")
-    print(f"[INFO] Log dir: {log_dir}")
+    print("TRAINING ENVIRONMENT")
+    print(f"[INFO] Output directory: {output_dir}")
+    print(f"[INFO] Checkpoint location: {output_dir}/eign_step_*.pt")
+    print(f"[INFO] TensorBoard logs: {log_dir}")
+    print(f"[INFO] Device: {device}")
+    if device.type == "cuda":
+        props = torch.cuda.get_device_properties(0)
+        print(f"[INFO] GPU: {props.name}")
+        print(f"[INFO] GPU Memory: {props.total_memory / (1024**3):.1f} GB")
     print("=" * 70)
 
     # Safe optimization: Enable TF32 on Ampere GPUs
@@ -452,14 +437,14 @@ def train(
 
     try:
         # Auto-resume: check if checkpoints exist and load latest
-        if auto_resume and checkpoint_dir.exists():
-            checkpoint_files = sorted(checkpoint_dir.glob("eign_step_*.pt"))
+        if auto_resume and output_dir.exists():
+            checkpoint_files = sorted(output_dir.glob("eign_step_*.pt"))
             if checkpoint_files:
                 print("=" * 70)
                 print("[AUTO-RESUME] Found existing checkpoints, resuming training")
                 print("=" * 70)
                 state = _load_checkpoint(
-                    checkpoint_dir,
+                    output_dir,
                     model,
                     optimizer,
                     scheduler,
@@ -479,7 +464,7 @@ def train(
                 print("=" * 70)
             else:
                 print("=" * 70)
-                print("[TRAINING] Checkpoint directory not found, starting from scratch")
+                print("[TRAINING] Output directory not found, starting from scratch")
                 print("=" * 70)
 
         optimizer.zero_grad(set_to_none=True)
@@ -571,7 +556,7 @@ def train(
                 print("[EARLY TEST CHECKPOINT] Saving at step 50 to validate disk write")
                 print("=" * 70)
                 _save_checkpoint(
-                    checkpoint_dir,
+                    output_dir,
                     model,
                     optimizer,
                     scheduler,
@@ -579,14 +564,13 @@ def train(
                     global_step,
                     tokens_seen,
                     config_hashes,
-                    output_dir,
                 )
                 print("[EARLY TEST CHECKPOINT] Validation complete. Training continues.")
                 print("=" * 70 + "\n")
 
             if global_step % checkpoint_every_steps == 0:
                 _save_checkpoint(
-                    checkpoint_dir,
+                    output_dir,
                     model,
                     optimizer,
                     scheduler,
@@ -594,7 +578,6 @@ def train(
                     global_step,
                     tokens_seen,
                     config_hashes,
-                    output_dir,
                 )
 
             accum_steps = 0
@@ -602,9 +585,9 @@ def train(
             accum_tokens = 0
             window_start = None
 
-        # Drop any partial accumulation to keep optimizer/scheduler synchronized.
+        # Final checkpoint
         _save_checkpoint(
-            checkpoint_dir,
+            output_dir,
             model,
             optimizer,
             scheduler,
@@ -612,7 +595,6 @@ def train(
             global_step,
             tokens_seen,
             config_hashes,
-            output_dir,
         )
     finally:
         # FIX B: Ensure dataset cleanup (closes memmaps on Windows)

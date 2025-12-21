@@ -113,54 +113,32 @@ def _list_txt_files(root: Path) -> list[Path]:
     return files
 
 
-def _ensure_tokenizer(
-    tokenizer_path: Path,
-    training_data_dir: Path,
-    vocab_size: int = 32000,
-) -> Path:
-    """Ensure tokenizer exists, training it if necessary.
+def _check_tokenizer_exists(tokenizer_path: Path) -> None:
+    """Verify tokenizer artifacts exist (strict check, no auto-training).
+
+    Tokenizer training is a preprocessing step, not part of training runtime.
 
     Args:
         tokenizer_path: Expected path to tokenizer .model file
-        training_data_dir: Directory containing training .txt files
-        vocab_size: Tokenizer vocabulary size
 
-    Returns:
-        Path to tokenizer .model file
+    Raises:
+        FileNotFoundError: If tokenizer artifacts are missing
     """
-    if tokenizer_path.exists():
-        return tokenizer_path
+    model_file = tokenizer_path
+    vocab_file = tokenizer_path.with_suffix(".vocab")
 
-    print("\n" + "=" * 70)
-    print("TOKENIZER NOT FOUND - TRAINING NEW TOKENIZER")
-    print("=" * 70)
-    print(f"Expected path: {tokenizer_path}")
-    print(f"Training from: {training_data_dir}")
-    print(f"Vocabulary size: {vocab_size:,}")
-    print()
-
-    # Get training files
-    training_files = _list_txt_files(training_data_dir)
-    print(f"Found {len(training_files)} training files")
-
-    # Train tokenizer
-    model_prefix = str(tokenizer_path.with_suffix(""))
-    print(f"Training tokenizer... (this may take a few minutes)")
-
-    trained_model = train_tokenizer(
-        input_files=training_files,
-        model_prefix=model_prefix,
-        vocab_size=vocab_size,
-        model_type="unigram",
-        character_coverage=0.9995,
-        pad_id=3,
-    )
-
-    print(f"[OK] Tokenizer trained successfully: {trained_model}")
-    print("=" * 70)
-    print()
-
-    return trained_model
+    if not model_file.exists() or not vocab_file.exists():
+        raise FileNotFoundError(
+            f"\n{'='*70}\n"
+            f"TOKENIZER MISSING - CANNOT PROCEED\n"
+            f"{'='*70}\n"
+            f"Expected tokenizer artifacts:\n"
+            f"  - {model_file} {'[FOUND]' if model_file.exists() else '[MISSING]'}\n"
+            f"  - {vocab_file} {'[FOUND]' if vocab_file.exists() else '[MISSING]'}\n\n"
+            f"Tokenizer must be trained as a preprocessing step before training.\n"
+            f"Please train the tokenizer first using the tokenizer training script.\n"
+            f"{'='*70}\n"
+        )
 
 
 def _resolve_train_data_dir(
@@ -352,13 +330,8 @@ def main() -> None:
         # Tokenizer path
         tokenizer_path = artifacts_dir / "tokenizer" / "v0001" / "eign_spm_unigram_32k.model"
 
-        # Ensure tokenizer exists (using resolved train_dir)
-        # Use smaller vocab for smoke test to work with synthetic data
-        tokenizer_path = _ensure_tokenizer(
-            tokenizer_path=tokenizer_path,
-            training_data_dir=train_dir,
-            vocab_size=150,  # Smaller vocab for smoke test with synthetic data
-        )
+        # Verify tokenizer exists (strict check - no auto-training)
+        _check_tokenizer_exists(tokenizer_path)
 
         # Load tokenizer
         tokenizer = SentencePieceTokenizer(tokenizer_path)
@@ -436,12 +409,14 @@ def main() -> None:
     tokenizer_path = artifacts_dir / "tokenizer" / "v0001" / "eign_spm_unigram_32k.model"
     dataset_cache_dir = cache_dir / data_cfg.get("cache_dir", "train")
 
-    # Ensure tokenizer exists (using resolved train_dir)
-    tokenizer_path = _ensure_tokenizer(
-        tokenizer_path=tokenizer_path,
-        training_data_dir=train_dir,
-        vocab_size=32000,
-    )
+    # Verify tokenizer exists (strict check - no auto-training)
+    print("=" * 70)
+    print("TOKENIZER STATUS")
+    _check_tokenizer_exists(tokenizer_path)
+    print(f"[FOUND] {tokenizer_path}")
+    print(f"[FOUND] {tokenizer_path.with_suffix('.vocab')}")
+    print("=" * 70)
+    print()
 
     # Load tokenizer
     tokenizer = SentencePieceTokenizer(tokenizer_path)
@@ -454,9 +429,14 @@ def main() -> None:
 
     # Get training files (using resolved train_dir)
     file_paths = _list_txt_files(train_dir)
-    print(f"Training files: {len(file_paths)} from: {train_dir}")
-    print(f"Tokenizer vocab size: {tokenizer.vocab_size:,}")
-    print(f"Sequence length: {seq_len} (model.max_seq_len = data.seq_len)")
+
+    print("=" * 70)
+    print("DATASET & MODEL CONFIGURATION")
+    print(f"Training files: {len(file_paths)}")
+    print(f"Training data: {train_dir}")
+    print(f"Tokenizer vocab: {tokenizer.vocab_size:,}")
+    print(f"Sequence length: {seq_len}")
+    print("=" * 70)
     print()
 
     # Create dataset with validated seq_len
@@ -482,25 +462,18 @@ def main() -> None:
         f"dataset.seq_len ({dataset.seq_len})"
     )
 
-    # Output directory resolution with multi-environment support
+    # Output directory resolution (Kaggle-first design)
     base_output_dir = train_cfg.get("base_output_dir")
 
     if base_output_dir:
-        # User specified base_output_dir (e.g., Google Drive path)
+        # Explicit override from config
         output_dir = str(Path(base_output_dir).resolve())
-        print(f"[INFO] Using base_output_dir: {output_dir}")
     elif Path("/kaggle/working").exists():
-        # Auto-detect Kaggle
+        # Kaggle environment (primary target)
         output_dir = "/kaggle/working"
-        print(f"[KAGGLE DETECTED] Using: {output_dir}")
-    elif Path("/content/drive/MyDrive").exists():
-        # Auto-detect Google Colab with Drive mounted
-        output_dir = "/content/drive/MyDrive/eign"
-        print(f"[COLAB DETECTED] Using Google Drive: {output_dir}")
     else:
         # Local development
         output_dir = str((runs_dir / "train").resolve())
-        print(f"[LOCAL] Using: {output_dir}")
 
     # Config hashes
     train_cfg = dict(train_cfg)
