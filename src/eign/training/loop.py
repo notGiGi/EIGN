@@ -185,12 +185,21 @@ def _save_checkpoint(
         tokens_seen: Total tokens processed
         config_hashes: Configuration hashes for validation
     """
+    # Ensure output directory exists
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    # CRITICAL: Verify directory is writable (Kaggle debugging)
+    if not output_dir.exists():
+        raise RuntimeError(f"[CHECKPOINT ERROR] Output directory does not exist: {output_dir}")
+    if not output_dir.is_dir():
+        raise RuntimeError(f"[CHECKPOINT ERROR] Output path is not a directory: {output_dir}")
 
     # Single .pt file per checkpoint (no subdirectories)
     checkpoint_filename = f"eign_step_{step:08d}.pt"
     checkpoint_path = output_dir / checkpoint_filename
     temp_checkpoint_path = output_dir / f".tmp_{checkpoint_filename}"
+
+    print(f"[CHECKPOINT] Starting save to: {checkpoint_path.absolute()}")
 
     # Prepare checkpoint payload
     checkpoint = {
@@ -205,23 +214,52 @@ def _save_checkpoint(
     }
 
     # Atomic save: write to temp file, then rename (prevents corruption)
+    print(f"[CHECKPOINT] Writing temp file: {temp_checkpoint_path.name}")
     torch.save(checkpoint, temp_checkpoint_path)
+
+    # Verify temp file was created
+    if not temp_checkpoint_path.exists():
+        raise RuntimeError(f"[CHECKPOINT ERROR] Temp file not created: {temp_checkpoint_path}")
+
+    print(f"[CHECKPOINT] Renaming temp file to: {checkpoint_filename}")
     temp_checkpoint_path.replace(checkpoint_path)
 
     # Verify checkpoint file exists and has reasonable size
     if not checkpoint_path.exists():
-        raise RuntimeError(f"Checkpoint save failed: {checkpoint_path} not found")
+        raise RuntimeError(f"[CHECKPOINT ERROR] Final file not found after rename: {checkpoint_path}")
 
     file_size_mb = checkpoint_path.stat().st_size / (1024 * 1024)
 
     # Sanity check: checkpoint should be at least 10MB
     if file_size_mb < 10:
         raise RuntimeError(
-            f"Checkpoint suspiciously small: {checkpoint_path} "
+            f"[CHECKPOINT ERROR] File suspiciously small: {checkpoint_path} "
             f"({file_size_mb:.2f} MB)"
         )
 
-    print(f"[CHECKPOINT] Saved: {checkpoint_filename} ({file_size_mb:.1f} MB)")
+    # CRITICAL: Force filesystem sync for Kaggle persistence
+    import os
+    try:
+        # Sync file descriptor to disk
+        fd = os.open(str(checkpoint_path), os.O_RDONLY)
+        os.fsync(fd)
+        os.close(fd)
+        # Sync directory to disk (ensures directory entry is persisted)
+        dir_fd = os.open(str(output_dir), os.O_RDONLY)
+        os.fsync(dir_fd)
+        os.close(dir_fd)
+    except (OSError, AttributeError):
+        # fsync may not be available on all platforms
+        pass
+
+    print(f"[CHECKPOINT] ✓ Saved successfully: {checkpoint_filename} ({file_size_mb:.1f} MB)")
+    print(f"[CHECKPOINT] ✓ Location: {checkpoint_path.absolute()}")
+
+    # KAGGLE WARNING: /kaggle/working/ is ephemeral
+    if str(output_dir).startswith("/kaggle/working"):
+        print(f"[KAGGLE WARNING] /kaggle/working/ is cleared when kernel stops!")
+        print(f"[KAGGLE WARNING] Checkpoints will DISAPPEAR unless kernel completes successfully")
+        print(f"[KAGGLE WARNING] For persistence, manually download from 'Data' > 'Output' tab")
 
 
 def _load_checkpoint(
@@ -370,19 +408,60 @@ def train(
     # CRITICAL: Use absolute paths for Kaggle persistence
     output_dir = Path(output_dir).resolve()
     log_dir = output_dir / "tensorboard"
+
+    print("=" * 70)
+    print("DIRECTORY SETUP & VERIFICATION")
+    print(f"[INFO] Output directory (requested): {output_dir}")
+    print(f"[INFO] Output directory exists: {output_dir.exists()}")
+    print(f"[INFO] Output directory is_dir: {output_dir.is_dir() if output_dir.exists() else 'N/A'}")
+
+    # Create directories
     output_dir.mkdir(parents=True, exist_ok=True)
     log_dir.mkdir(parents=True, exist_ok=True)
 
+    # Verify creation
+    if not output_dir.exists() or not output_dir.is_dir():
+        raise RuntimeError(f"CRITICAL: Failed to create output directory: {output_dir}")
+
+    print(f"[INFO] ✓ Output directory ready: {output_dir}")
+    print(f"[INFO] ✓ TensorBoard directory ready: {log_dir}")
+
+    # KAGGLE-SPECIFIC WARNING
+    if str(output_dir).startswith("/kaggle/working"):
+        print()
+        print("!" * 70)
+        print("KAGGLE CHECKPOINT PERSISTENCE - IMPORTANT")
+        print("!" * 70)
+        print("[WARNING] /kaggle/working/ is EPHEMERAL and cleared when kernel stops")
+        print("[WARNING] Checkpoints will DISAPPEAR if kernel is interrupted")
+        print()
+        print("TO PRESERVE CHECKPOINTS:")
+        print("  1. Let kernel run to completion (checkpoints auto-saved)")
+        print("  2. OR manually download during training:")
+        print("     - Click 'Data' tab (right panel)")
+        print("     - Click 'Output' folder")
+        print("     - Download eign_step_*.pt files")
+        print()
+        print("TO RESUME TRAINING:")
+        print("  1. Upload downloaded .pt file to Kaggle Dataset")
+        print("  2. Add dataset as input to this notebook")
+        print("  3. Copy to /kaggle/working/ before training")
+        print("!" * 70)
+        print()
+
+    print("=" * 70)
+    print()
+
     print("=" * 70)
     print("TRAINING ENVIRONMENT")
-    print(f"[INFO] Output directory: {output_dir}")
     print(f"[INFO] Checkpoint location: {output_dir}/eign_step_*.pt")
-    print(f"[INFO] TensorBoard logs: {log_dir}")
     print(f"[INFO] Device: {device}")
     if device.type == "cuda":
         props = torch.cuda.get_device_properties(0)
         print(f"[INFO] GPU: {props.name}")
         print(f"[INFO] GPU Memory: {props.total_memory / (1024**3):.1f} GB")
+    print(f"[INFO] Checkpoint interval: every {checkpoint_every_steps} steps")
+    print(f"[INFO] Auto-resume: {'enabled' if auto_resume else 'disabled'}")
     print("=" * 70)
 
     # Safe optimization: Enable TF32 on Ampere GPUs
@@ -565,6 +644,11 @@ def train(
                     tokens_seen,
                     config_hashes,
                 )
+                # List files in output directory for verification
+                checkpoint_files = sorted(output_dir.glob("eign_step_*.pt"))
+                print(f"[EARLY TEST CHECKPOINT] Files in {output_dir}:")
+                for f in checkpoint_files:
+                    print(f"  - {f.name} ({f.stat().st_size / (1024**2):.1f} MB)")
                 print("[EARLY TEST CHECKPOINT] Validation complete. Training continues.")
                 print("=" * 70 + "\n")
 
@@ -579,6 +663,11 @@ def train(
                     tokens_seen,
                     config_hashes,
                 )
+                # List checkpoint files after regular save
+                checkpoint_files = sorted(output_dir.glob("eign_step_*.pt"))
+                print(f"[CHECKPOINT] Total checkpoints in {output_dir}: {len(checkpoint_files)}")
+                for f in checkpoint_files[-3:]:  # Show last 3
+                    print(f"  - {f.name} ({f.stat().st_size / (1024**2):.1f} MB)")
 
             accum_steps = 0
             accum_loss = 0.0
