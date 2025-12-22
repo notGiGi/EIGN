@@ -11,7 +11,7 @@ train:
   log_every_steps: 10
   # Checkpoint interval: 5000 steps recommended for Kaggle (keeps checkpoint size manageable)
   # Only last 2 checkpoints kept automatically to save space
-  checkpoint_every_steps: 5000
+  checkpoint_every_steps: 1000
   # Base output directory
   # - Leave null for auto-detection (Kaggle: /kaggle/working, Local: runs/train)
   # - Set explicit path for custom location
