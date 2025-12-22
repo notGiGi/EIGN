@@ -9,9 +9,12 @@ train:
   warmup_steps: 100
   max_grad_norm: 1.0
   log_every_steps: 10
+  # Checkpoint interval: 5000 steps recommended for Kaggle (keeps checkpoint size manageable)
+  # Only last 2 checkpoints kept automatically to save space
   checkpoint_every_steps: 5000
-  # Base output directory (supports Google Drive paths like /content/drive/MyDrive/eign)
-  # Leave null to use default local paths
+  # Base output directory
+  # - Leave null for auto-detection (Kaggle: /kaggle/working, Local: runs/train)
+  # - Set explicit path for custom location
   base_output_dir: null
   seed: 123
   deterministic: true

@@ -201,7 +201,7 @@ def _save_checkpoint(
 
     print(f"[CHECKPOINT] Starting save to: {checkpoint_path.absolute()}")
 
-    # Prepare checkpoint payload
+    # Prepare checkpoint payload (MINIMAL - only essential state)
     checkpoint = {
         "model_state_dict": model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
@@ -215,7 +215,10 @@ def _save_checkpoint(
 
     # Atomic save: write to temp file, then rename (prevents corruption)
     print(f"[CHECKPOINT] Writing temp file: {temp_checkpoint_path.name}")
-    torch.save(checkpoint, temp_checkpoint_path)
+
+    # CRITICAL: Use pickle_protocol=4 to avoid bloat (default uses highest protocol which can include extra metadata)
+    # Use _use_new_zipfile_serialization=False for older PyTorch compatibility
+    torch.save(checkpoint, temp_checkpoint_path, pickle_protocol=4, _use_new_zipfile_serialization=False)
 
     # Verify temp file was created
     if not temp_checkpoint_path.exists():
@@ -255,11 +258,23 @@ def _save_checkpoint(
     print(f"[CHECKPOINT] ✓ Saved successfully: {checkpoint_filename} ({file_size_mb:.1f} MB)")
     print(f"[CHECKPOINT] ✓ Location: {checkpoint_path.absolute()}")
 
+    # CRITICAL: Keep only last 2 checkpoints to save space (Kaggle has limited output quota)
+    checkpoint_files = sorted(output_dir.glob("eign_step_*.pt"))
+    if len(checkpoint_files) > 2:
+        # Delete oldest checkpoints, keep only last 2
+        for old_checkpoint in checkpoint_files[:-2]:
+            try:
+                old_size_mb = old_checkpoint.stat().st_size / (1024 * 1024)
+                old_checkpoint.unlink()
+                print(f"[CHECKPOINT] Deleted old checkpoint: {old_checkpoint.name} ({old_size_mb:.1f} MB freed)")
+            except Exception as e:
+                print(f"[CHECKPOINT] Warning: Could not delete {old_checkpoint.name}: {e}")
+
     # KAGGLE WARNING: /kaggle/working/ is ephemeral
     if str(output_dir).startswith("/kaggle/working"):
-        print(f"[KAGGLE WARNING] /kaggle/working/ is cleared when kernel stops!")
-        print(f"[KAGGLE WARNING] Checkpoints will DISAPPEAR unless kernel completes successfully")
-        print(f"[KAGGLE WARNING] For persistence, manually download from 'Data' > 'Output' tab")
+        print(f"[KAGGLE] Keeping only last 2 checkpoints to save space")
+        print(f"[KAGGLE] Download checkpoints from 'Data' > 'Output' tab DURING training")
+        print(f"[KAGGLE] Files will DISAPPEAR if kernel is interrupted!")
 
 
 def _load_checkpoint(
