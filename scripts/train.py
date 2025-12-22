@@ -463,13 +463,16 @@ def main() -> None:
     )
 
     # Output directory resolution (Kaggle-first design)
+    # CRITICAL: On Kaggle, ONLY checkpoints go to /kaggle/working/
+    # Everything else (code, data, cache, logs) stays outside to avoid bloating "Save Version"
     base_output_dir = train_cfg.get("base_output_dir")
 
     if base_output_dir:
         # Explicit override from config
         output_dir = str(Path(base_output_dir).resolve())
     elif Path("/kaggle/working").exists():
-        # Kaggle environment (primary target)
+        # Kaggle environment: checkpoints ONLY in /kaggle/working/
+        # (this directory gets saved by Kaggle's "Save Version")
         output_dir = "/kaggle/working"
     else:
         # Local development

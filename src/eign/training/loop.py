@@ -422,13 +422,20 @@ def train(
 
     # CRITICAL: Use absolute paths for Kaggle persistence
     output_dir = Path(output_dir).resolve()
-    log_dir = output_dir / "tensorboard"
+
+    # KAGGLE-SPECIFIC: TensorBoard logs go to /tmp/ (not /kaggle/working/)
+    # This prevents bloating "Save Version" with large log files
+    if str(output_dir).startswith("/kaggle/working"):
+        log_dir = Path("/tmp/tensorboard")
+        print("[KAGGLE] TensorBoard logs redirected to /tmp/ (not saved in output)")
+    else:
+        log_dir = output_dir / "tensorboard"
 
     print("=" * 70)
     print("DIRECTORY SETUP & VERIFICATION")
-    print(f"[INFO] Output directory (requested): {output_dir}")
-    print(f"[INFO] Output directory exists: {output_dir.exists()}")
-    print(f"[INFO] Output directory is_dir: {output_dir.is_dir() if output_dir.exists() else 'N/A'}")
+    print(f"[INFO] Checkpoint directory: {output_dir}")
+    print(f"[INFO] TensorBoard directory: {log_dir}")
+    print(f"[INFO] Checkpoint directory exists: {output_dir.exists()}")
 
     # Create directories
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -445,22 +452,27 @@ def train(
     if str(output_dir).startswith("/kaggle/working"):
         print()
         print("!" * 70)
-        print("KAGGLE CHECKPOINT PERSISTENCE - IMPORTANT")
+        print("KAGGLE OUTPUT CONFIGURATION - CRITICAL")
         print("!" * 70)
-        print("[WARNING] /kaggle/working/ is EPHEMERAL and cleared when kernel stops")
-        print("[WARNING] Checkpoints will DISAPPEAR if kernel is interrupted")
+        print("[INFO] SAVED to /kaggle/working/ (in Kaggle output):")
+        print("       - Checkpoints: eign_step_*.pt (ONLY these files)")
         print()
-        print("TO PRESERVE CHECKPOINTS:")
-        print("  1. Let kernel run to completion (checkpoints auto-saved)")
-        print("  2. OR manually download during training:")
-        print("     - Click 'Data' tab (right panel)")
-        print("     - Click 'Output' folder")
-        print("     - Download eign_step_*.pt files")
+        print("[INFO] NOT SAVED (temporary, in /tmp/):")
+        print("       - TensorBoard logs (reduces output bloat)")
+        print("       - Dataset cache (use Kaggle datasets as input)")
+        print("       - Source code (upload to notebook, not output)")
         print()
-        print("TO RESUME TRAINING:")
-        print("  1. Upload downloaded .pt file to Kaggle Dataset")
-        print("  2. Add dataset as input to this notebook")
-        print("  3. Copy to /kaggle/working/ before training")
+        print("[WARNING] /kaggle/working/ contents:")
+        print("          - Saved ONLY if kernel completes successfully")
+        print("          - DELETED if kernel interrupted or fails")
+        print("          - Only last 2 checkpoints kept (auto-cleanup)")
+        print()
+        print("TO DOWNLOAD CHECKPOINTS:")
+        print("  During training: Data tab > Output > eign_step_*.pt > Download")
+        print("  IMPORTANT: Download DURING training, not after!")
+        print()
+        print("EXPECTED OUTPUT SIZE:")
+        print("  - 2 checkpoints × ~500MB = ~1GB total (manageable)")
         print("!" * 70)
         print()
 
