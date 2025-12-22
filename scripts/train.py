@@ -38,7 +38,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from eign.data import DocumentDataset, SentencePieceTokenizer, train_tokenizer
-from eign.env import get_artifacts_dir, get_cache_dir, get_data_dir, get_runs_dir
+from eign.env import detect_environment, get_artifacts_dir, get_cache_dir, get_data_dir, get_runs_dir
 from eign.model import EIGNModel
 from eign.training.loop import train
 
@@ -327,8 +327,12 @@ def main() -> None:
         model_cfg["n_heads"] = 4
         model_cfg["ffn_dim"] = 512
 
-        # Tokenizer path
-        tokenizer_path = artifacts_dir / "tokenizer" / "v0001" / "eign_spm_unigram_32k.model"
+        # Tokenizer path (environment-aware)
+        env = detect_environment()
+        if env == "kaggle":
+            tokenizer_path = Path("/kaggle/input/eign-tokenizer/eign_spm_unigram_32k.model")
+        else:
+            tokenizer_path = artifacts_dir / "tokenizer" / "v0001" / "eign_spm_unigram_32k.model"
 
         # Verify tokenizer exists (strict check - no auto-training)
         _check_tokenizer_exists(tokenizer_path)
@@ -405,8 +409,13 @@ def main() -> None:
     print("=" * 70)
     print()
 
-    # Tokenizer and cache paths
-    tokenizer_path = artifacts_dir / "tokenizer" / "v0001" / "eign_spm_unigram_32k.model"
+    # Tokenizer path (environment-aware)
+    env = detect_environment()
+    if env == "kaggle":
+        tokenizer_path = Path("/kaggle/input/eign-tokenizer/eign_spm_unigram_32k.model")
+    else:
+        tokenizer_path = artifacts_dir / "tokenizer" / "v0001" / "eign_spm_unigram_32k.model"
+
     dataset_cache_dir = cache_dir / data_cfg.get("cache_dir", "train")
 
     # Verify tokenizer exists (strict check - no auto-training)

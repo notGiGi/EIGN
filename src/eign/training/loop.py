@@ -255,8 +255,8 @@ def _save_checkpoint(
         # fsync may not be available on all platforms
         pass
 
-    print(f"[CHECKPOINT] ✓ Saved successfully: {checkpoint_filename} ({file_size_mb:.1f} MB)")
-    print(f"[CHECKPOINT] ✓ Location: {checkpoint_path.absolute()}")
+    print(f"[CHECKPOINT] Saved successfully: {checkpoint_filename} ({file_size_mb:.1f} MB)")
+    print(f"[CHECKPOINT] Location: {checkpoint_path.absolute()}")
 
     # CRITICAL: Keep only last 2 checkpoints to save space (Kaggle has limited output quota)
     checkpoint_files = sorted(output_dir.glob("eign_step_*.pt"))
@@ -445,8 +445,8 @@ def train(
     if not output_dir.exists() or not output_dir.is_dir():
         raise RuntimeError(f"CRITICAL: Failed to create output directory: {output_dir}")
 
-    print(f"[INFO] ✓ Output directory ready: {output_dir}")
-    print(f"[INFO] ✓ TensorBoard directory ready: {log_dir}")
+    print(f"[INFO] Output directory ready: {output_dir}")
+    print(f"[INFO] TensorBoard directory ready: {log_dir}")
 
     # KAGGLE-SPECIFIC WARNING
     if str(output_dir).startswith("/kaggle/working"):

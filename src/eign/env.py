@@ -35,7 +35,9 @@ def get_cache_dir() -> Path:
     """
     env = detect_environment()
     if env == "kaggle":
-        cache_dir = Path("/kaggle/working/cache")
+        # CRITICAL: Use /tmp/ to avoid bloating /kaggle/working/ output
+        # Cache regenerates each session (acceptable trade-off)
+        cache_dir = Path("/tmp/eign_cache")
     else:
         cache_dir = get_project_root() / "cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -50,10 +52,12 @@ def get_runs_dir() -> Path:
     """
     env = detect_environment()
     if env == "kaggle":
-        runs_dir = Path("/kaggle/working/runs")
+        # CRITICAL: Return /kaggle/working/ directly (no subdirectory)
+        # Checkpoints save directly there to avoid nesting
+        runs_dir = Path("/kaggle/working")
     else:
         runs_dir = get_project_root() / "runs"
-    runs_dir.mkdir(parents=True, exist_ok=True)
+        runs_dir.mkdir(parents=True, exist_ok=True)
     return runs_dir
 
 
@@ -80,8 +84,10 @@ def get_artifacts_dir() -> Path:
     """
     env = detect_environment()
     if env == "kaggle":
-        artifacts_dir = Path("/kaggle/working/artifacts")
+        # CRITICAL: Read tokenizer from Kaggle Dataset (uploaded separately)
+        # No mkdir - this is read-only input directory
+        artifacts_dir = Path("/kaggle/input/eign-tokenizer")
     else:
         artifacts_dir = get_project_root() / "artifacts"
-    artifacts_dir.mkdir(parents=True, exist_ok=True)
+        artifacts_dir.mkdir(parents=True, exist_ok=True)
     return artifacts_dir
