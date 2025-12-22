@@ -330,7 +330,10 @@ def main() -> None:
         # Tokenizer path (environment-aware)
         env = detect_environment()
         if env == "kaggle":
+            # Try dedicated dataset first, fallback to phase1 dataset
             tokenizer_path = Path("/kaggle/input/eign-tokenizer/eign_spm_unigram_32k.model")
+            if not tokenizer_path.exists():
+                tokenizer_path = Path("/kaggle/input/phase1/pytorch/default/1/artifacts/tokenizer/v0001/eign_spm_unigram_32k.model")
         else:
             tokenizer_path = artifacts_dir / "tokenizer" / "v0001" / "eign_spm_unigram_32k.model"
 
@@ -412,7 +415,10 @@ def main() -> None:
     # Tokenizer path (environment-aware)
     env = detect_environment()
     if env == "kaggle":
+        # Try dedicated dataset first, fallback to phase1 dataset
         tokenizer_path = Path("/kaggle/input/eign-tokenizer/eign_spm_unigram_32k.model")
+        if not tokenizer_path.exists():
+            tokenizer_path = Path("/kaggle/input/phase1/pytorch/default/1/artifacts/tokenizer/v0001/eign_spm_unigram_32k.model")
     else:
         tokenizer_path = artifacts_dir / "tokenizer" / "v0001" / "eign_spm_unigram_32k.model"
 
