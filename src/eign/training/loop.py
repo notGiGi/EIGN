@@ -294,8 +294,8 @@ def _load_checkpoint(
     checkpoint_path = checkpoint_files[-1]  # Latest checkpoint
     print(f"[CHECKPOINT] Loading from: {checkpoint_path}")
 
-    # Load checkpoint
-    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    # Load checkpoint (weights_only=False needed for optimizer state, step counter, etc.)
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
 
     # Restore model state
     model.load_state_dict(checkpoint["model_state_dict"])
