@@ -330,10 +330,19 @@ def main() -> None:
         # Tokenizer path (environment-aware)
         env = detect_environment()
         if env == "kaggle":
-            # Try dedicated dataset first, fallback to phase1 dataset
-            tokenizer_path = Path("/kaggle/input/eign-tokenizer/eign_spm_unigram_32k.model")
-            if not tokenizer_path.exists():
-                tokenizer_path = Path("/kaggle/input/phase1/pytorch/default/1/artifacts/tokenizer/v0001/eign_spm_unigram_32k.model")
+            # Try multiple locations (in order of preference)
+            tokenizer_candidates = [
+                Path("/kaggle/input/eign-tokenizer/eign_spm_unigram_32k.model"),
+                Path("/kaggle/input/phase1/pytorch/default/1/artifacts/tokenizer/v0001/eign_spm_unigram_32k.model"),
+                Path("/kaggle/working/artifacts/tokenizer/v0001/eign_spm_unigram_32k.model"),
+            ]
+            tokenizer_path = None
+            for candidate in tokenizer_candidates:
+                if candidate.exists():
+                    tokenizer_path = candidate
+                    break
+            if tokenizer_path is None:
+                tokenizer_path = tokenizer_candidates[0]  # Use first for error message
         else:
             tokenizer_path = artifacts_dir / "tokenizer" / "v0001" / "eign_spm_unigram_32k.model"
 
@@ -415,10 +424,19 @@ def main() -> None:
     # Tokenizer path (environment-aware)
     env = detect_environment()
     if env == "kaggle":
-        # Try dedicated dataset first, fallback to phase1 dataset
-        tokenizer_path = Path("/kaggle/input/eign-tokenizer/eign_spm_unigram_32k.model")
-        if not tokenizer_path.exists():
-            tokenizer_path = Path("/kaggle/input/phase1/pytorch/default/1/artifacts/tokenizer/v0001/eign_spm_unigram_32k.model")
+        # Try multiple locations (in order of preference)
+        tokenizer_candidates = [
+            Path("/kaggle/input/eign-tokenizer/eign_spm_unigram_32k.model"),
+            Path("/kaggle/input/phase1/pytorch/default/1/artifacts/tokenizer/v0001/eign_spm_unigram_32k.model"),
+            Path("/kaggle/working/artifacts/tokenizer/v0001/eign_spm_unigram_32k.model"),
+        ]
+        tokenizer_path = None
+        for candidate in tokenizer_candidates:
+            if candidate.exists():
+                tokenizer_path = candidate
+                break
+        if tokenizer_path is None:
+            tokenizer_path = tokenizer_candidates[0]  # Use first for error message
     else:
         tokenizer_path = artifacts_dir / "tokenizer" / "v0001" / "eign_spm_unigram_32k.model"
 
